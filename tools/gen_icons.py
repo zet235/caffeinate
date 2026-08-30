@@ -11,7 +11,10 @@ import os
 import struct
 import zlib
 
-ICON_SIZE = 32   # what Windows loads from the executable's resources
+# Every size Windows asks for. 16/20/24/32 cover the notification area from
+# 100% to 200% scaling and 32/48/64 cover Explorer's icon views, so the shell
+# can always pick an exact frame instead of resampling one.
+ICON_SIZES = (16, 20, 24, 32, 40, 48, 64)
 README_SIZE = 256
 
 SS = 4  # supersampling factor per axis, used to antialias the edges
@@ -64,7 +67,8 @@ def coverage(size):
     return out
 
 
-def write_ico(path, rgb, size=ICON_SIZE):
+def ico_image(size, rgb):
+    """One icon image: BITMAPINFOHEADER, the BGRA pixels, then the AND mask."""
     r, g, b = rgb
     alpha = coverage(size)
 
@@ -77,17 +81,32 @@ def write_ico(path, rgb, size=ICON_SIZE):
             row += bytes([b, g, r, a]) if a else b"\x00\x00\x00\x00"
         rows.append(bytes(row))
     xor_mask = b"".join(rows)
-    and_mask = b"\x00" * (4 * size)  # 1bpp, 32 bits per row = 4 bytes, all opaque
+
+    # The AND mask is 1 bit per pixel with every row padded to 4 bytes, so the
+    # stride is not simply 4: a 48px row needs 8 bytes. Assuming 4 writes a
+    # short mask, and the whole .ico then fails to load.
+    stride = ((size + 31) // 32) * 4
+    and_mask = b"\x00" * (stride * size)  # all opaque
 
     # BITMAPINFOHEADER: the height field must be doubled (XOR + AND masks)
     header = struct.pack(
         "<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, len(xor_mask), 0, 0, 0, 0
     )
-    image = header + xor_mask + and_mask
+    return header + xor_mask + and_mask
 
-    ico = struct.pack("<HHH", 0, 1, 1)  # reserved, type=icon, count=1
-    ico += struct.pack("<BBBBHHII", size, size, 0, 0, 1, 32, len(image), 22)
-    ico += image
+
+def write_ico(path, rgb, sizes=ICON_SIZES):
+    images = [(size, ico_image(size, rgb)) for size in sizes]
+
+    # ICONDIR, then one ICONDIRENTRY per image, then the images back to back.
+    ico = struct.pack("<HHH", 0, 1, len(images))  # reserved, type=icon, count
+    offset = 6 + 16 * len(images)
+    for size, image in images:
+        # The side length is one byte, in which 0 means 256.
+        side = size % 256
+        ico += struct.pack("<BBBBHHII", side, side, 0, 0, 1, 32, len(image), offset)
+        offset += len(image)
+    ico += b"".join(image for _, image in images)
 
     with open(path, "wb") as f:
         f.write(ico)

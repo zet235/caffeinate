@@ -1,6 +1,6 @@
 [package]
 name = "caffeinate"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 # The let-chain in src/main.rs needs 1.88.
 rust-version = "1.88"
