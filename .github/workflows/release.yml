@@ -91,6 +91,17 @@ jobs:
           # The changelog lives in the tag itself, so it is written once and
           # cannot drift from what was actually released. Everything after the
           # subject line is the body.
+          #
+          # actions/checkout leaves the tag as a lightweight ref, and
+          # %(contents) on one of those silently yields the *commit* message
+          # instead. Re-fetch to get the real tag object, then insist on it:
+          # publishing a release whose notes are somebody's commit message is
+          # worse than failing the job.
+          git fetch --force --tags --quiet
+          $type = git cat-file -t $tag
+          if ($type -ne 'tag') {
+            throw "$tag is a $type, not an annotated tag. The changelog is read from the tag message, so tag with -a."
+          }
           $message = git tag -l --format='%(contents)' $tag
           $notes = ($message -split "`n" | Select-Object -Skip 1) -join "`n"
           $notes = $notes.Trim()
