@@ -1,4 +1,5 @@
 /target
 
-# Development notes kept locally, not published
+# Development notes and local tooling, kept out of the published repo
 /docs/superpowers/
+/.claude/

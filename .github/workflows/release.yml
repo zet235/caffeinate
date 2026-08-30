@@ -21,6 +21,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release body comes from the annotated tag's own message, and a
+          # shallow clone does not fetch tag objects.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -84,6 +88,16 @@ jobs:
           "checksum=dist/$name.zip.sha256" >> $env:GITHUB_OUTPUT
           "hash=$hash"                     >> $env:GITHUB_OUTPUT
 
+          # The changelog lives in the tag itself, so it is written once and
+          # cannot drift from what was actually released. Everything after the
+          # subject line is the body.
+          $message = git tag -l --format='%(contents)' $tag
+          $notes = ($message -split "`n" | Select-Object -Skip 1) -join "`n"
+          $notes = $notes.Trim()
+          "notes<<CHANGELOG_EOF"  >> $env:GITHUB_OUTPUT
+          $notes                  >> $env:GITHUB_OUTPUT
+          "CHANGELOG_EOF"         >> $env:GITHUB_OUTPUT
+
           Write-Host "packaged $name.zip  sha256=$hash"
 
       - name: Publish
@@ -94,8 +108,11 @@ jobs:
           ASSET: ${{ steps.package.outputs.asset }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}
           HASH: ${{ steps.package.outputs.hash }}
+          CHANGELOG: ${{ steps.package.outputs.notes }}
         run: |
           $notes = @"
+          $env:CHANGELOG
+
           ### Install
 
           ``````console
