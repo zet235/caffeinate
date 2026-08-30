@@ -52,14 +52,17 @@ jobs:
                     -Destination "dist/$name"
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
 
-          # Scoop manifests need the SHA256, so surface it in the release notes
-          # rather than making people download and hash the file themselves.
+          # Scoop manifests need the SHA256. It goes in the release notes for
+          # people, and into a sidecar file so scoop's autoupdate can read it
+          # without anyone hand editing a manifest for every release.
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash *$name.zip" | Out-File -Encoding ascii -NoNewline "dist/$name.zip.sha256"
 
-          "tag=$tag"            >> $env:GITHUB_OUTPUT
-          "version=$version"    >> $env:GITHUB_OUTPUT
-          "asset=dist/$name.zip" >> $env:GITHUB_OUTPUT
-          "hash=$hash"          >> $env:GITHUB_OUTPUT
+          "tag=$tag"                       >> $env:GITHUB_OUTPUT
+          "version=$version"               >> $env:GITHUB_OUTPUT
+          "asset=dist/$name.zip"           >> $env:GITHUB_OUTPUT
+          "checksum=dist/$name.zip.sha256" >> $env:GITHUB_OUTPUT
+          "hash=$hash"                     >> $env:GITHUB_OUTPUT
 
           Write-Host "packaged $name.zip  sha256=$hash"
 
@@ -82,5 +85,6 @@ jobs:
           "@
           gh release create "${{ steps.package.outputs.tag }}" `
             "${{ steps.package.outputs.asset }}" `
+            "${{ steps.package.outputs.checksum }}" `
             --title "${{ steps.package.outputs.tag }}" `
             --notes "$notes"

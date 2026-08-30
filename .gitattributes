@@ -1,0 +1,6 @@
+# Keep line endings stable across machines and CI.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.ico binary
+*.png binary
