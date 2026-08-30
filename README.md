@@ -63,8 +63,6 @@ It stays silent unless something goes wrong, so it composes cleanly in scripts.
 
 ## The tray
 
-<div align="center">
-
 ```
 ☑ Keep system awake          holds ES_SYSTEM_REQUIRED
 ☑ Keep screen on             holds ES_DISPLAY_REQUIRED
@@ -78,8 +76,6 @@ CLI: cargo build --release
 ──────────────────────
 Exit
 ```
-
-</div>
 
 - The two switches are independent. While a big download runs you can keep the
   system awake and still let the screen turn off.
