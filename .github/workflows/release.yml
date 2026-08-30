@@ -23,24 +23,44 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Test
-        run: cargo test --all
+      # A tag does not match ci.yml's triggers, so without repeating the gates
+      # here a release could ship code that CI would have rejected.
+      - name: Formatting
+        run: cargo fmt --all -- --check
 
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --all --locked
+
+      - name: Icons match their source
+        run: |
+          python tools/gen_icons.py
+          git diff --exit-code -- assets/active.ico assets/idle.ico
+
+      # --locked so the published binary is reproducible from the tagged tree.
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Package
         id: package
         shell: pwsh
+        # Tag names arrive through the environment, never interpolated into the
+        # script body: ${{ }} is substituted as text before pwsh parses it, and
+        # $(...) inside a double quoted string would then execute.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            "${{ github.event.inputs.tag }}"
-          } else {
-            "${{ github.ref_name }}"
-          }
+          $tag = if ($env:EVENT_NAME -eq "workflow_dispatch") { $env:INPUT_TAG } else { $env:REF_NAME }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+') { throw "unexpected tag: $tag" }
           $version = $tag -replace '^v', ''
           $name = "caffeinate-$version-x86_64-windows"
 
@@ -70,21 +90,26 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.package.outputs.tag }}
+          ASSET: ${{ steps.package.outputs.asset }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          HASH: ${{ steps.package.outputs.hash }}
         run: |
           $notes = @"
           ### Install
 
-          Unzip anywhere. Put ``caffeinate.exe`` on your ``PATH`` and run
+          ``````console
+          scoop bucket add zet235 https://github.com/zet235/scoop-bucket
+          scoop install caffeinate
+          ``````
+
+          Or unzip anywhere: put ``caffeinate.exe`` on your ``PATH`` and run
           ``caffeinate-tray.exe`` when you want the tray icon.
 
           ### Checksum
 
           ``````
-          SHA256  ${{ steps.package.outputs.hash }}
+          SHA256  $env:HASH
           ``````
           "@
-          gh release create "${{ steps.package.outputs.tag }}" `
-            "${{ steps.package.outputs.asset }}" `
-            "${{ steps.package.outputs.checksum }}" `
-            --title "${{ steps.package.outputs.tag }}" `
-            --notes "$notes"
+          gh release create $env:TAG $env:ASSET $env:CHECKSUM --title $env:TAG --notes "$notes"
