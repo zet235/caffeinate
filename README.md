@@ -101,8 +101,20 @@ linking into a Japanese face that looks poor at menu sizes.
 
 ## Install
 
+### Scoop
+
+```console
+$ scoop bucket add zet235 https://github.com/zet235/scoop-bucket
+$ scoop install caffeinate
+```
+
+That puts `caffeinate` on your `PATH` and gives the tray app a Start menu
+entry. Later versions arrive with `scoop update caffeinate`.
+
+### By hand
+
 Grab the latest [release][releases] and unzip it anywhere. Two files, no
-installer, no runtime, no registry.
+installer, no runtime, nothing written to the registry.
 
 Put `caffeinate.exe` somewhere on `PATH` and run `caffeinate-tray.exe` when you
 want the icon.
