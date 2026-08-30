@@ -23,7 +23,12 @@ enum PreferredAppMode {
     AllowDark = 1,
 }
 
-type SetPreferredAppMode = unsafe extern "system" fn(PreferredAppMode) -> PreferredAppMode;
+/// The return value is the *previous* mode, which is 0 (Default) on the first
+/// call of a process. It is deliberately typed as a plain `i32` and not as
+/// `PreferredAppMode`: that enum has exactly one valid discriminant, so
+/// materialising a 0 as one would be instant undefined behaviour even though
+/// the value is thrown away.
+type SetPreferredAppMode = unsafe extern "system" fn(PreferredAppMode) -> i32;
 type FlushMenuThemes = unsafe extern "system" fn();
 
 /// Opt into the system theme. **Must run before any menu is created.**

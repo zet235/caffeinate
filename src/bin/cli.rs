@@ -10,7 +10,8 @@
 //! If `caffeinate-tray` happens to be running, it is told about the hold so its
 //! icon and menu can show it. The tray is never load bearing.
 
-use std::process::{Command, ExitCode};
+use std::io::Write;
+use std::process::Command;
 use std::time::Duration;
 
 use caffeinate::{ipc, power};
@@ -114,6 +115,13 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
                 i += 1;
             }
             "--" => {
+                if i + 1 >= args.len() {
+                    // Silently turning this into an unbounded hold is the same
+                    // class of surprise as a dropped -t: a script whose command
+                    // expanded to nothing would sit there holding the machine
+                    // awake, saying nothing, until something killed it.
+                    return Err("`--` with no command after it".to_string());
+                }
                 command.extend_from_slice(&args[i + 1..]);
                 break;
             }
@@ -152,7 +160,19 @@ fn label(mode: &Mode) -> String {
     }
 }
 
-fn main() -> ExitCode {
+fn main() {
+    let code = run_cli();
+    // process::exit skips the usual cleanup, including the flush that would
+    // normally happen when main returns.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // Not ExitCode: that is a u8, and Windows exit codes are 32 bits wide.
+    // Truncating them turns `exit 256` into a success, which would quietly
+    // hide a failed build from any script that wrapped it.
+    std::process::exit(code);
+}
+
+fn run_cli() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let cli = match parse_args(&args) {
@@ -160,13 +180,13 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("caffeinate: {message}");
             eprintln!("Try `caffeinate --help`.");
-            return ExitCode::from(2);
+            return 2;
         }
     };
 
     if cli.mode == Mode::Help {
         print!("{USAGE}");
-        return ExitCode::SUCCESS;
+        return 0;
     }
 
     // The hold belongs to this process from here until the end of main.
@@ -175,7 +195,7 @@ fn main() -> ExitCode {
     }
 
     let pid = std::process::id();
-    let announced = ipc::send(&ipc::Wire::new(
+    ipc::send(&ipc::Wire::new(
         ipc::KIND_ACQUIRE,
         pid,
         cli.display,
@@ -186,7 +206,7 @@ fn main() -> ExitCode {
         Mode::Wrap(command) => run(command),
         Mode::Timed(duration, _) => {
             std::thread::sleep(*duration);
-            ExitCode::SUCCESS
+            0
         }
         Mode::Hold => {
             // Nothing to wait on, so park until Ctrl-C kills the process. The
@@ -198,27 +218,25 @@ fn main() -> ExitCode {
         Mode::Help => unreachable!("handled above"),
     };
 
-    if announced {
-        ipc::send(&ipc::Wire::new(ipc::KIND_RELEASE, pid, cli.display, ""));
-    }
+    // Sent unconditionally rather than only when the acquire was accepted: a
+    // tray that started after this process did never saw the acquire, but it
+    // may well be running now, and a release it does not recognise is a no-op.
+    ipc::send(&ipc::Wire::new(ipc::KIND_RELEASE, pid, cli.display, ""));
     power::apply(false, false);
 
     code
 }
 
-/// Run the wrapped command and turn its result into an exit code.
-fn run(command: &[String]) -> ExitCode {
+/// Run the wrapped command and return its exit code.
+fn run(command: &[String]) -> i32 {
     match Command::new(&command[0]).args(&command[1..]).status() {
-        Ok(status) => match status.code() {
-            Some(code) => ExitCode::from(code as u8),
-            // No exit code means the child was terminated rather than
-            // returning; 1 is the closest honest answer.
-            None => ExitCode::from(1),
-        },
+        // On Windows this is the full 32-bit exit code, including values like
+        // 0xC0000005 for a crash.
+        Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
             eprintln!("caffeinate: cannot run `{}`: {e}", command[0]);
             // 127 is the shell convention for "command not found".
-            ExitCode::from(127)
+            127
         }
     }
 }
@@ -329,6 +347,13 @@ mod tests {
             Mode::Help
         );
         assert_eq!(parse_args(&args(&["-h"])).unwrap().mode, Mode::Help);
+    }
+
+    #[test]
+    fn a_bare_double_dash_is_refused() {
+        let err = parse_args(&args(&["--"])).unwrap_err();
+        assert!(err.contains("no command"), "got: {err}");
+        assert!(parse_args(&args(&["-d", "--"])).is_err());
     }
 
     #[test]

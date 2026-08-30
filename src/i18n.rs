@@ -17,9 +17,10 @@ use crate::state::SPANS;
 
 /// Every string a user can see.
 ///
-/// The two composed fields are function pointers rather than format strings
-/// because the word order differs between languages ("剩餘 01:23:45" versus
-/// "01:23:45 remaining"); swapping a prefix would not be enough.
+/// The composed fields are function pointers rather than format strings because
+/// word order differs between languages ("剩餘 01:23:45" versus "01:23:45
+/// remaining"); swapping a prefix would not be enough. Composition lives here
+/// too, so no caller ever glues visible text together itself.
 pub struct Strings {
     // Menu entries
     pub keep_system: &'static str,
@@ -30,8 +31,7 @@ pub struct Strings {
     pub no_timer: &'static str,
     pub exit: &'static str,
 
-    // Tooltip fragments describing what is being held
-    pub tip_off: &'static str,
+    // Tooltip fragments describing what the user's own switches hold
     pub tip_system: &'static str,
     pub tip_screen: &'static str,
     pub tip_both: &'static str,
@@ -40,43 +40,69 @@ pub struct Strings {
     // Startup failures
     pub err_tray: &'static str,
     pub err_timer: &'static str,
+    pub err_mutex: &'static str,
 
     /// Turns `HH:MM:SS` into the menu's "remaining" row.
     pub remaining_text: fn(&str) -> String,
-    /// Turns a state description plus an optional `HH:MM:SS` into a tooltip.
-    pub tooltip: fn(&str, Option<&str>) -> String,
     /// Labels a hold announced by a `caffeinate` CLI process.
     pub cli_hold: fn(&str) -> String,
+    /// Builds the whole tooltip.
+    ///
+    /// `what` is what the user's own switches hold, `None` when both are off;
+    /// `hms` is the countdown; `hold` is a CLI hold. All three absent means
+    /// idle. This function owns every separator, which is also why a CLI-only
+    /// hold can never render as "off" beside a lit icon.
+    pub tooltip: fn(Option<&str>, Option<&str>, Option<&str>) -> String,
 }
 
 fn en_remaining(hms: &str) -> String {
     format!("{hms} remaining")
 }
 
-fn en_tooltip(what: &str, hms: Option<&str>) -> String {
-    match hms {
-        Some(hms) => format!("caffeinate: {what}, {hms} remaining"),
-        None => format!("caffeinate: {what}"),
-    }
-}
-
 fn en_cli_hold(label: &str) -> String {
     format!("CLI: {label}")
+}
+
+fn en_tooltip(what: Option<&str>, hms: Option<&str>, hold: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(what) = what {
+        parts.push(match hms {
+            Some(hms) => format!("{what}, {hms} remaining"),
+            None => what.to_string(),
+        });
+    }
+    if let Some(hold) = hold {
+        parts.push(en_cli_hold(hold));
+    }
+    if parts.is_empty() {
+        parts.push("off".to_string());
+    }
+    format!("caffeinate: {}", parts.join(" · "))
 }
 
 fn zh_remaining(hms: &str) -> String {
     format!("剩餘 {hms}")
 }
 
-fn zh_tooltip(what: &str, hms: Option<&str>) -> String {
-    match hms {
-        Some(hms) => format!("caffeinate：{what} · 剩餘 {hms}"),
-        None => format!("caffeinate：{what}"),
-    }
-}
-
 fn zh_cli_hold(label: &str) -> String {
     format!("CLI：{label}")
+}
+
+fn zh_tooltip(what: Option<&str>, hms: Option<&str>, hold: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(what) = what {
+        parts.push(match hms {
+            Some(hms) => format!("{what} · 剩餘 {hms}"),
+            None => what.to_string(),
+        });
+    }
+    if let Some(hold) = hold {
+        parts.push(zh_cli_hold(hold));
+    }
+    if parts.is_empty() {
+        parts.push("未啟用".to_string());
+    }
+    format!("caffeinate：{}", parts.join(" · "))
 }
 
 pub static EN: Strings = Strings {
@@ -96,7 +122,6 @@ pub static EN: Strings = Strings {
     no_timer: "No timer",
     exit: "Exit",
 
-    tip_off: "off",
     tip_system: "system",
     tip_screen: "screen",
     tip_both: "system + screen",
@@ -104,10 +129,11 @@ pub static EN: Strings = Strings {
 
     err_tray: "Failed to create the tray icon:",
     err_timer: "Failed to create the timer. The countdown will not work.",
+    err_mutex: "Failed to check whether another copy is already running.",
 
     remaining_text: en_remaining,
-    tooltip: en_tooltip,
     cli_hold: en_cli_hold,
+    tooltip: en_tooltip,
 };
 
 pub static ZH: Strings = Strings {
@@ -127,7 +153,6 @@ pub static ZH: Strings = Strings {
     no_timer: "未計時",
     exit: "結束",
 
-    tip_off: "未啟用",
     tip_system: "系統",
     tip_screen: "螢幕",
     tip_both: "系統+螢幕",
@@ -135,10 +160,11 @@ pub static ZH: Strings = Strings {
 
     err_tray: "無法建立系統匣圖示：",
     err_timer: "無法建立計時器，倒數功能將無法運作。",
+    err_mutex: "無法確認是否已有另一份在執行。",
 
     remaining_text: zh_remaining,
-    tooltip: zh_tooltip,
     cli_hold: zh_cli_hold,
+    tooltip: zh_tooltip,
 };
 
 /// The low 10 bits of a LANGID hold the primary language; `LANG_CHINESE` is

@@ -54,8 +54,10 @@ impl Leases {
 
     fn acquire(&mut self, wire: &Wire) -> bool {
         // A process announcing twice replaces its own entry rather than
-        // stacking up.
-        self.release(wire.pid);
+        // stacking up. Whether that removal happened matters even if the rest
+        // of this fails: the caller only refreshes the UI when told something
+        // changed, so losing this would leave a stale row on screen forever.
+        let replaced = self.release(wire.pid);
 
         // SAFETY: a scalar call. The returned handle is checked below and owned
         // by the Lease from that point on.
@@ -64,7 +66,7 @@ impl Leases {
             // Without a handle we could never tell when this lease went stale,
             // and a lease that never expires would leave the icon lit forever.
             // Dropping it costs only the status display.
-            return false;
+            return replaced;
         }
 
         self.list.push(Lease {

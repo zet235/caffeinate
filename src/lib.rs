@@ -6,3 +6,4 @@
 
 pub mod ipc;
 pub mod power;
+pub mod util;

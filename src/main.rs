@@ -33,8 +33,18 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Is another copy already running?
-fn already_running() -> bool {
+/// Outcome of the single-instance check.
+///
+/// "Could not tell" is deliberately not folded into "already running": exiting
+/// silently on a real failure would look exactly like a successful launch that
+/// did nothing, with no icon and no message to explain it.
+enum Instance {
+    First,
+    AlreadyRunning,
+    CheckFailed,
+}
+
+fn check_instance() -> Instance {
     let name = wide(MUTEX_NAME);
     // SAFETY: `name` is a valid NUL-terminated UTF-16 buffer that outlives the
     // call. A null first argument means default security attributes. The handle
@@ -42,7 +52,13 @@ fn already_running() -> bool {
     // which point the OS reclaims it.
     unsafe {
         let handle = CreateMutexW(null_mut(), 1, name.as_ptr());
-        handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS
+        if handle.is_null() {
+            Instance::CheckFailed
+        } else if GetLastError() == ERROR_ALREADY_EXISTS {
+            Instance::AlreadyRunning
+        } else {
+            Instance::First
+        }
     }
 }
 
@@ -64,13 +80,15 @@ fn fatal(message: &str) -> ! {
 }
 
 fn main() {
-    if already_running() {
+    let strings = i18n::detect();
+
+    match check_instance() {
+        Instance::First => {}
         // No dialog: double-clicking the executable again should not interrupt
         // the user.
-        std::process::exit(0);
+        Instance::AlreadyRunning => std::process::exit(0),
+        Instance::CheckFailed => fatal(strings.err_mutex),
     }
-
-    let strings = i18n::detect();
 
     // Has to happen before any menu exists, or Win32 popups stay light forever.
     theme::follow_system();

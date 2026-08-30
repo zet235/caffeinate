@@ -17,8 +17,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, FindWindowExW, HWND_MESSAGE, RegisterClassW, SendMessageW,
-    WM_COPYDATA, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, FindWindowExW, HWND_MESSAGE, InSendMessage, RegisterClassW,
+    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_COPYDATA, WNDCLASSW,
 };
 
 /// Window class of the tray program's message-only window.
@@ -36,6 +36,11 @@ pub const KIND_RELEASE: u32 = 2;
 /// label is only ever shown in a menu row, so a fixed cap keeps the wire format
 /// a plain `#[repr(C)]` struct that can be validated by size alone.
 pub const LABEL_CAP: usize = 64;
+
+/// How long to wait for the tray to acknowledge. The CLI announces before it
+/// starts the wrapped command, so a tray that has stopped pumping messages must
+/// not be able to hold the command hostage.
+const SEND_TIMEOUT_MS: u32 = 2000;
 
 /// What crosses the wire. Fixed size on purpose: the receiver can reject
 /// anything whose `cbData` does not match exactly, before reading a single
@@ -117,18 +122,28 @@ pub fn send(msg: &Wire) -> bool {
         lpData: msg as *const Wire as *mut _,
     };
 
+    // A plain SendMessageW blocks forever if the receiver has stopped pumping,
+    // which would hang the CLI before the wrapped command ever starts. The
+    // module promises the tray is never load bearing, and a wedged tray has to
+    // count as "not running" for that promise to hold.
+    let mut answer: usize = 0;
     // SAFETY: WM_COPYDATA requires the buffer to stay valid for the duration of
-    // the call, and SendMessageW is synchronous, so `msg` and `data` both
-    // outlive it. The receiver only reads `cbData` bytes and copies them out.
-    let result = unsafe {
-        SendMessageW(
+    // the call; this one is synchronous, so `msg` and `data` both outlive it.
+    // The receiver reads at most `cbData` bytes and copies them out.
+    // `answer` is a live local for the out parameter.
+    let delivered = unsafe {
+        SendMessageTimeoutW(
             hwnd,
             WM_COPYDATA,
             0 as WPARAM,
             &data as *const COPYDATASTRUCT as LPARAM,
+            SMTO_ABORTIFHUNG,
+            SEND_TIMEOUT_MS,
+            &mut answer,
         )
     };
-    result != 0
+
+    delivered != 0 && answer != 0
 }
 
 // ---------------------------------------------------------------- server side
@@ -149,7 +164,16 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_COPYDATA {
-        // SAFETY: for WM_COPYDATA the system guarantees lparam points at a
+        // WM_COPYDATA is only meaningful when it was *sent*: lparam then points
+        // at the sender's COPYDATASTRUCT, which the system keeps alive for the
+        // call. Anyone can POST this message instead, in which case lparam is
+        // an arbitrary number and dereferencing it would take the tray down.
+        // SAFETY: a no-argument call returning a scalar.
+        if unsafe { InSendMessage() } == 0 {
+            return 0;
+        }
+
+        // SAFETY: for a sent WM_COPYDATA the system guarantees lparam points at a
         // COPYDATASTRUCT valid for the duration of this call. We accept the
         // payload only when its size matches Wire exactly, then copy it out
         // before returning, so nothing outlives the sender's buffer.

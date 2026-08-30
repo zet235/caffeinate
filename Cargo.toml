@@ -2,6 +2,8 @@
 name = "caffeinate"
 version = "0.1.0"
 edition = "2024"
+# The let-chain in src/main.rs needs 1.88.
+rust-version = "1.88"
 description = "Keep Windows awake, from the tray or the command line"
 repository = "https://github.com/zet235/caffeinate"
 license = "MIT"

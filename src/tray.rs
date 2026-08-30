@@ -23,11 +23,6 @@ pub const ID_QUIT: &str = "quit";
 /// per duration: adding or removing options means touching only `SPANS`.
 pub const ID_SPAN_PREFIX: &str = "span";
 
-/// Where the CLI hold row goes when it is shown. The menu is laid out as
-/// system, screen, separator, duration, separator, remaining, separator, exit,
-/// so index 6 puts the row directly under "remaining".
-const HOLD_ROW_INDEX: usize = 6;
-
 /// build.rs compiles assets/active.ico as resource id 1 and idle.ico as id 2.
 const ICON_ACTIVE: u16 = 1;
 const ICON_IDLE: u16 = 2;
@@ -47,6 +42,11 @@ pub struct Ui {
     /// menu with nothing to report has no dead row in it.
     hold: MenuItem,
     hold_shown: Cell<bool>,
+    /// Where the hold row goes, measured from the menu that was actually built
+    /// rather than hand counted. muda's insert is a `Vec::insert` underneath,
+    /// which panics on an out of range position, and this process aborts on
+    /// panic with no console to print to: the icon would simply vanish.
+    hold_index: usize,
     icon_active: Icon,
     icon_idle: Icon,
     /// The menu has to stay alive, or right-clicking the tray pops up nothing.
@@ -102,10 +102,14 @@ impl Ui {
             &quit,
         ])?;
 
+        // Last two entries are the separator and Exit, so inserting here puts
+        // the hold row directly under "remaining" whatever the menu grows into.
+        let hold_index = menu.items().len().saturating_sub(2);
+
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
             .with_icon(icon_idle.clone())
-            .with_tooltip((strings.tooltip)(strings.tip_off, None))
+            .with_tooltip((strings.tooltip)(None, None, None))
             .with_menu_on_left_click(true)
             .build()?;
 
@@ -118,6 +122,7 @@ impl Ui {
             remaining,
             hold,
             hold_shown: Cell::new(false),
+            hold_index,
             icon_active,
             icon_idle,
             menu,
@@ -154,15 +159,14 @@ impl Ui {
         };
         let _ = self.tray.set_icon(Some(icon));
 
-        let mut tip = if power_ok {
-            state.tooltip(now, self.strings)
+        // The tooltip is composed entirely inside i18n, including the CLI hold,
+        // so the icon above and the text here can never disagree about whether
+        // anything is being held.
+        let tip = if power_ok {
+            state.tooltip(now, self.strings, hold)
         } else {
             self.strings.tip_power_failed.to_string()
         };
-        if let Some(label) = hold {
-            tip.push_str(" · ");
-            tip.push_str(&(self.strings.cli_hold)(label));
-        }
         let _ = self.tray.set_tooltip(Some(tip));
     }
 
@@ -173,16 +177,16 @@ impl Ui {
             (Some(label), true) => self.hold.set_text((self.strings.cli_hold)(label)),
             (Some(label), false) => {
                 self.hold.set_text((self.strings.cli_hold)(label));
-                // Index 6 sits just after the "remaining" row and before the
-                // separator above Exit.
-                if self.menu.insert(&self.hold, HOLD_ROW_INDEX).is_ok() {
-                    self.hold_shown.set(true);
-                }
+                let _ = self.menu.insert(&self.hold, self.hold_index);
+                self.hold_shown.set(true);
             }
             (None, true) => {
-                if self.menu.remove(&self.hold).is_ok() {
-                    self.hold_shown.set(false);
-                }
+                // muda detaches the row before its own bookkeeping can fail, so
+                // treating this as done regardless is the honest reading: the
+                // row is gone either way, and pretending otherwise would leave
+                // this stuck believing a detached item is still on screen.
+                let _ = self.menu.remove(&self.hold);
+                self.hold_shown.set(false);
             }
             (None, false) => {}
         }

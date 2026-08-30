@@ -87,6 +87,13 @@ impl AppState {
     }
 
     pub fn set_span(&mut self, span: Span, now: Instant) {
+        // Re-picking the duration that is already selected must not restart a
+        // running countdown. The entries are ordinary check items, so clicking
+        // the ticked one looks like a toggle and is easy to do by accident;
+        // silently adding another full span would be invisible.
+        if span == self.span {
+            return;
+        }
         self.span = span;
         self.deadline = if self.is_active() {
             span.as_duration().map(|d| now + d)
@@ -157,15 +164,18 @@ impl AppState {
     }
 
     /// Text for the tray icon's tooltip.
-    pub fn tooltip(&self, now: Instant, s: &Strings) -> String {
+    ///
+    /// `hold` is the label of a hold announced by a CLI process, which the
+    /// tooltip has to mention or it would read "off" beside a lit icon.
+    pub fn tooltip(&self, now: Instant, s: &Strings, hold: Option<&str>) -> String {
         let what = match (self.system, self.display) {
-            (false, false) => return (s.tooltip)(s.tip_off, None),
-            (true, true) => s.tip_both,
-            (true, false) => s.tip_system,
-            (false, true) => s.tip_screen,
+            (false, false) => None,
+            (true, true) => Some(s.tip_both),
+            (true, false) => Some(s.tip_system),
+            (false, true) => Some(s.tip_screen),
         };
         let hms = self.remaining(now).map(format_hms);
-        (s.tooltip)(what, hms.as_deref())
+        (s.tooltip)(what, hms.as_deref(), hold)
     }
 }
 
@@ -339,28 +349,40 @@ mod tests {
     }
 
     #[test]
-    fn spans_match_the_intended_menu() {
+    fn reselecting_the_current_span_does_not_restart_the_countdown() {
+        let now = t0();
+        let mut s = AppState::new();
+        s.set_span(Span::Minutes(5), now);
+        s.toggle_system(now);
+        let later = now + secs(240);
+        assert_eq!(s.remaining(later), Some(secs(60)));
+
+        // Clicking the already-ticked duration entry must be inert.
+        s.set_span(Span::Minutes(5), later);
         assert_eq!(
-            SPANS,
-            [
-                Span::Forever,
-                Span::Minutes(5),
-                Span::Minutes(10),
-                Span::Minutes(15),
-                Span::Minutes(30),
-                Span::Minutes(60),
-                Span::Minutes(120),
-                Span::Minutes(300),
-            ]
+            s.remaining(later),
+            Some(secs(60)),
+            "re-picking the current span silently added another five minutes"
         );
     }
 
     #[test]
-    fn every_language_has_a_label_per_span() {
-        // The two are matched by index; a length mismatch would wire a menu
-        // entry to the wrong duration.
-        assert_eq!(crate::i18n::EN.spans.len(), SPANS.len());
-        assert_eq!(crate::i18n::ZH.spans.len(), SPANS.len());
+    fn every_span_has_a_label_in_both_languages() {
+        // The menu wires entry i to SPANS[i], so a label array that drifts out
+        // of order would offer a row saying one thing and doing another. The
+        // lengths are already fixed by the array type, so what is worth
+        // checking is that the ends line up and nothing is blank.
+        for s in [&crate::i18n::EN, &crate::i18n::ZH] {
+            assert!(s.spans.iter().all(|label| !label.is_empty()));
+        }
+        assert_eq!(SPANS[0], Span::Forever);
+        assert_eq!(crate::i18n::EN.spans[0], "Indefinitely");
+        assert_eq!(crate::i18n::ZH.spans[0], "永久");
+
+        let last = SPANS.len() - 1;
+        assert_eq!(SPANS[last], Span::Minutes(300));
+        assert_eq!(crate::i18n::EN.spans[last], "5 hours");
+        assert_eq!(crate::i18n::ZH.spans[last], "5 小時");
     }
 
     #[test]
@@ -390,13 +412,13 @@ mod tests {
         let now = t0();
         let s = &crate::i18n::EN;
         let mut st = AppState::new();
-        assert_eq!(st.tooltip(now, s), "caffeinate: off");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate: off");
         st.toggle_system(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate: system");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate: system");
         st.toggle_display(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate: system + screen");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate: system + screen");
         st.toggle_system(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate: screen");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate: screen");
     }
 
     #[test]
@@ -404,13 +426,13 @@ mod tests {
         let now = t0();
         let s = &crate::i18n::ZH;
         let mut st = AppState::new();
-        assert_eq!(st.tooltip(now, s), "caffeinate：未啟用");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate：未啟用");
         st.toggle_system(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate：系統");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate：系統");
         st.toggle_display(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate：系統+螢幕");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate：系統+螢幕");
         st.toggle_system(now);
-        assert_eq!(st.tooltip(now, s), "caffeinate：螢幕");
+        assert_eq!(st.tooltip(now, s, None), "caffeinate：螢幕");
     }
 
     #[test]
@@ -420,12 +442,40 @@ mod tests {
         st.set_span(Span::Minutes(30), now);
         st.toggle_system(now);
         assert_eq!(
-            st.tooltip(now, &crate::i18n::EN),
+            st.tooltip(now, &crate::i18n::EN, None),
             "caffeinate: system, 00:30:00 remaining"
         );
         assert_eq!(
-            st.tooltip(now, &crate::i18n::ZH),
+            st.tooltip(now, &crate::i18n::ZH, None),
             "caffeinate：系統 · 剩餘 00:30:00"
+        );
+    }
+
+    #[test]
+    fn a_cli_only_hold_never_reads_as_off() {
+        // The icon lights up for a CLI hold, so a tooltip saying "off" beside
+        // it would be two answers to the same question.
+        let now = t0();
+        let st = AppState::new();
+        assert_eq!(
+            st.tooltip(now, &crate::i18n::EN, Some("cargo build")),
+            "caffeinate: CLI: cargo build"
+        );
+        assert_eq!(
+            st.tooltip(now, &crate::i18n::ZH, Some("cargo build")),
+            "caffeinate：CLI：cargo build"
+        );
+    }
+
+    #[test]
+    fn tooltip_reports_both_holds_at_once() {
+        let now = t0();
+        let mut st = AppState::new();
+        st.set_span(Span::Minutes(30), now);
+        st.toggle_system(now);
+        assert_eq!(
+            st.tooltip(now, &crate::i18n::EN, Some("cargo build")),
+            "caffeinate: system, 00:30:00 remaining · CLI: cargo build"
         );
     }
 }
