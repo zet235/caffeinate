@@ -2,6 +2,7 @@
 //! push `AppState` onto the UI unconditionally. **Every decision lives in
 //! `state.rs`; nothing here chooses anything.**
 
+use std::cell::Cell;
 use std::error::Error;
 use std::time::Instant;
 
@@ -14,12 +15,18 @@ use crate::state::{AppState, SPANS, Span};
 pub const ID_SYSTEM: &str = "system";
 pub const ID_DISPLAY: &str = "display";
 pub const ID_REMAIN: &str = "remain";
+pub const ID_HOLD: &str = "hold";
 pub const ID_QUIT: &str = "quit";
 
 /// Duration entries use ids `span0`, `span1`, and so on, where the number is an
 /// index into [`SPANS`]. A prefix plus an index avoids maintaining one constant
 /// per duration: adding or removing options means touching only `SPANS`.
 pub const ID_SPAN_PREFIX: &str = "span";
+
+/// Where the CLI hold row goes when it is shown. The menu is laid out as
+/// system, screen, separator, duration, separator, remaining, separator, exit,
+/// so index 6 puts the row directly under "remaining".
+const HOLD_ROW_INDEX: usize = 6;
 
 /// build.rs compiles assets/active.ico as resource id 1 and idle.ico as id 2.
 const ICON_ACTIVE: u16 = 1;
@@ -35,10 +42,15 @@ pub struct Ui {
     /// matches the current span.
     spans: Vec<(CheckMenuItem, Span)>,
     remaining: MenuItem,
+    /// Shown only while a CLI process has announced a hold. It is inserted into
+    /// and removed from the menu rather than left in place greyed out, so a
+    /// menu with nothing to report has no dead row in it.
+    hold: MenuItem,
+    hold_shown: Cell<bool>,
     icon_active: Icon,
     icon_idle: Icon,
     /// The menu has to stay alive, or right-clicking the tray pops up nothing.
-    _menu: Menu,
+    menu: Menu,
     _span_menu: Submenu,
 }
 
@@ -73,8 +85,10 @@ impl Ui {
             .collect();
         let span_menu = Submenu::with_items(strings.duration, true, &span_refs)?;
 
-        // The "remaining" row is display only and never clickable.
+        // The "remaining" row is display only and never clickable, and so is
+        // the CLI hold row.
         let remaining = MenuItem::with_id(ID_REMAIN, strings.no_timer, false, None);
+        let hold = MenuItem::with_id(ID_HOLD, "", false, None);
         let quit = MenuItem::with_id(ID_QUIT, strings.exit, true, None);
 
         let menu = Menu::with_items(&[
@@ -102,9 +116,11 @@ impl Ui {
             display,
             spans: span_items,
             remaining,
+            hold,
+            hold_shown: Cell::new(false),
             icon_active,
             icon_idle,
-            _menu: menu,
+            menu,
             _span_menu: span_menu,
         })
     }
@@ -112,7 +128,12 @@ impl Ui {
     /// Push the state onto the UI. This is the **only** path that updates the
     /// UI: every change to `AppState` must be followed by a call here, and no
     /// other code is allowed to touch menu items directly.
-    pub fn sync(&self, state: &AppState, now: Instant, power_ok: bool) {
+    ///
+    /// `hold` is the label of a hold announced by a `caffeinate` CLI process,
+    /// if any. It deliberately does not move the two checkmarks: those report
+    /// what the user chose, and a CLI hold is somebody else's business. What it
+    /// does change is the icon and the tooltip, which report the real effect.
+    pub fn sync(&self, state: &AppState, now: Instant, power_ok: bool, hold: Option<&str>) {
         self.system.set_checked(state.system());
         self.display.set_checked(state.display());
 
@@ -123,18 +144,47 @@ impl Ui {
         self.remaining
             .set_text(state.remaining_text(now, self.strings));
 
-        let icon = if state.is_active() && power_ok {
+        self.sync_hold_row(hold);
+
+        let held_by_user = state.is_active() && power_ok;
+        let icon = if held_by_user || hold.is_some() {
             self.icon_active.clone()
         } else {
             self.icon_idle.clone()
         };
         let _ = self.tray.set_icon(Some(icon));
 
-        let tip = if power_ok {
+        let mut tip = if power_ok {
             state.tooltip(now, self.strings)
         } else {
             self.strings.tip_power_failed.to_string()
         };
+        if let Some(label) = hold {
+            tip.push_str(" · ");
+            tip.push_str(&(self.strings.cli_hold)(label));
+        }
         let _ = self.tray.set_tooltip(Some(tip));
+    }
+
+    /// Insert or remove the CLI hold row so the menu only carries it when there
+    /// is something to say.
+    fn sync_hold_row(&self, hold: Option<&str>) {
+        match (hold, self.hold_shown.get()) {
+            (Some(label), true) => self.hold.set_text((self.strings.cli_hold)(label)),
+            (Some(label), false) => {
+                self.hold.set_text((self.strings.cli_hold)(label));
+                // Index 6 sits just after the "remaining" row and before the
+                // separator above Exit.
+                if self.menu.insert(&self.hold, HOLD_ROW_INDEX).is_ok() {
+                    self.hold_shown.set(true);
+                }
+            }
+            (None, true) => {
+                if self.menu.remove(&self.hold).is_ok() {
+                    self.hold_shown.set(false);
+                }
+            }
+            (None, false) => {}
+        }
     }
 }

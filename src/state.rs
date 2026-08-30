@@ -208,7 +208,11 @@ mod tests {
         let mut s = AppState::new();
         s.set_span(Span::Minutes(30), now);
         assert_eq!(s.span(), Span::Minutes(30));
-        assert_eq!(s.remaining(now), None, "nothing is on, so nothing counts down");
+        assert_eq!(
+            s.remaining(now),
+            None,
+            "nothing is on, so nothing counts down"
+        );
     }
 
     #[test]
@@ -254,7 +258,10 @@ mod tests {
         s.toggle_system(now);
         s.set_span(Span::Forever, now);
         assert_eq!(s.remaining(now), None);
-        assert!(s.is_active(), "changing the span must not touch the switches");
+        assert!(
+            s.is_active(),
+            "changing the span must not touch the switches"
+        );
     }
 
     #[test]
@@ -293,7 +300,10 @@ mod tests {
         s.toggle_system(now);
         s.toggle_display(now);
         let expiry = now + secs(1800);
-        assert!(s.tick(expiry), "expiry should report true so the UI refreshes");
+        assert!(
+            s.tick(expiry),
+            "expiry should report true so the UI refreshes"
+        );
         assert!(!s.system());
         assert!(!s.display());
         assert_eq!(s.span(), Span::Forever, "the span returns to Forever");

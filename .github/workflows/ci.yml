@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Development happens on x86_64-pc-windows-gnu, but the runner's default
+      # is msvc. Building here is therefore a real check that the code does not
+      # depend on the local toolchain.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --all
+
+      - name: Release build
+        run: cargo build --release
+
+      # The tray icons are generated, not hand drawn, so what is committed must
+      # be exactly what the script produces. The .ico files are uncompressed and
+      # therefore byte for byte reproducible; the README png is not checked
+      # because its zlib output can vary between Python builds.
+      - name: Icons match their source
+        run: |
+          python tools/gen_icons.py
+          git diff --exit-code -- assets/active.ico assets/idle.ico
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caffeinate-x86_64-windows
+          path: |
+            target/release/caffeinate.exe
+            target/release/caffeinate-tray.exe
+          if-no-files-found: error

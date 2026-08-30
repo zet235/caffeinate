@@ -45,6 +45,8 @@ pub struct Strings {
     pub remaining_text: fn(&str) -> String,
     /// Turns a state description plus an optional `HH:MM:SS` into a tooltip.
     pub tooltip: fn(&str, Option<&str>) -> String,
+    /// Labels a hold announced by a `caffeinate` CLI process.
+    pub cli_hold: fn(&str) -> String,
 }
 
 fn en_remaining(hms: &str) -> String {
@@ -58,6 +60,10 @@ fn en_tooltip(what: &str, hms: Option<&str>) -> String {
     }
 }
 
+fn en_cli_hold(label: &str) -> String {
+    format!("CLI: {label}")
+}
+
 fn zh_remaining(hms: &str) -> String {
     format!("剩餘 {hms}")
 }
@@ -67,6 +73,10 @@ fn zh_tooltip(what: &str, hms: Option<&str>) -> String {
         Some(hms) => format!("caffeinate：{what} · 剩餘 {hms}"),
         None => format!("caffeinate：{what}"),
     }
+}
+
+fn zh_cli_hold(label: &str) -> String {
+    format!("CLI：{label}")
 }
 
 pub static EN: Strings = Strings {
@@ -97,6 +107,7 @@ pub static EN: Strings = Strings {
 
     remaining_text: en_remaining,
     tooltip: en_tooltip,
+    cli_hold: en_cli_hold,
 };
 
 pub static ZH: Strings = Strings {
@@ -127,6 +138,7 @@ pub static ZH: Strings = Strings {
 
     remaining_text: zh_remaining,
     tooltip: zh_tooltip,
+    cli_hold: zh_cli_hold,
 };
 
 /// The low 10 bits of a LANGID hold the primary language; `LANG_CHINESE` is

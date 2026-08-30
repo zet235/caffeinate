@@ -1,126 +1,180 @@
+<div align="center">
+
+<img src="assets/icon.png" width="96" alt="">
+
 # caffeinate
 
-Keep Windows awake from the system tray. Tick a box, the machine stops sleeping
-and the screen stays on. Close the program and everything is exactly as it was.
+**Keep Windows awake. From the tray, or from the command line.**
 
-No power plan is modified and no key presses are simulated. It uses the
-documented [`SetThreadExecutionState`][stes] API, which is the same mechanism
-video players and installers use to hold a machine awake.
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4.svg)](#)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE422B.svg)](https://www.rust-lang.org)
+
+</div>
+
+---
+
+No power plan is changed and no key presses are faked. It holds the documented
+[`SetThreadExecutionState`][stes] request, the same mechanism video players and
+installers use, and lets go the moment it exits.
+
+Two programs ship together:
+
+| | |
+|---|---|
+| **`caffeinate`** | a command line tool, in the spirit of macOS `caffeinate` |
+| **`caffeinate-tray`** | a tray icon with a menu, for when you are not in a terminal |
 
 [stes]: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate
 
-## Install
+## The command line
 
-Download `caffeinate-tray.exe` from the [releases page][releases] and run it.
-It is a single file with no installer and no runtime to install. Nothing is
-written to the registry and no configuration file is created.
+Put it in front of anything that takes a while:
 
-[releases]: https://github.com/zet235/caffeinate/releases
+```console
+$ caffeinate cargo build --release
+```
 
-## Use
+The machine stays awake for exactly as long as the build runs, then stops. The
+build's exit code passes straight through, so dropping `caffeinate` in front of
+a command never changes what a script sees.
 
-Left click or right click the tray icon:
+```console
+$ caffeinate -t 2h              # hold for two hours, then stop
+$ caffeinate                     # hold until Ctrl-C
+$ caffeinate -d npm run dev      # keep the screen on as well
+$ caffeinate -- cargo build -d   # -- when the command has flags of its own
+```
 
 ```
-☑ Keep system awake      holds ES_SYSTEM_REQUIRED
-☑ Keep screen on         holds ES_DISPLAY_REQUIRED
-─────────────
-Duration  ▸   ☑ Indefinitely
-              ☐ 5 / 10 / 15 / 30 minutes
-              ☐ 1 / 2 / 5 hours
-─────────────
+OPTIONS
+    -d, --display          Also keep the screen on. The default holds off
+                           system sleep only, so the display can still blank.
+    -t, --time <duration>  Hold for a period, then exit. A bare number is
+                           seconds, or use a suffix: 90, 30s, 45m, 2h
+    -h, --help             Show this help
+```
+
+`-t` and a command cannot be combined. macOS quietly ignores `-t` in that case;
+this refuses instead, because a silently dropped time limit is worse than an
+error.
+
+It stays silent unless something goes wrong, so it composes cleanly in scripts.
+
+## The tray
+
+<div align="center">
+
+```
+☑ Keep system awake          holds ES_SYSTEM_REQUIRED
+☑ Keep screen on             holds ES_DISPLAY_REQUIRED
+──────────────────────
+Duration  ▸    ☑ Indefinitely
+               ☐ 5 / 10 / 15 / 30 minutes
+               ☐ 1 / 2 / 5 hours
+──────────────────────
 00:29:31 remaining
-─────────────
+CLI: cargo build --release
+──────────────────────
 Exit
 ```
 
-- The two switches are independent. While downloading something large you can
-  keep only the system awake and let the screen turn off as usual.
-- When the countdown expires both switches turn off together and the duration
-  resets to Indefinitely.
-- Choosing a duration while both switches are off only records the choice. The
-  clock starts when a switch is turned on.
-- Turning on a second switch mid countdown does not restart it. Choosing a
-  different duration does.
-- Every launch starts in the off state. Nothing is remembered between runs and
-  nothing is added to startup.
-- Launching a second copy does nothing, so there is never a duplicate icon.
+</div>
+
+- The two switches are independent. While a big download runs you can keep the
+  system awake and still let the screen turn off.
+- When the countdown expires both switches turn off and the duration resets.
+- Choosing a duration while both switches are off only records the choice; the
+  clock starts when a switch goes on.
+- A second switch turned on mid countdown does not restart it. A different
+  duration does.
+- Every launch starts off. Nothing is remembered, nothing is added to startup,
+  nothing is written to the registry.
+- A second copy exits immediately, so there is never a duplicate icon.
+
+While `caffeinate` is holding the machine awake, the tray says so: the icon
+lights up and a row appears naming the command. The two checkmarks stay put,
+because they report what **you** chose and a CLI hold is somebody else's
+business.
 
 The interface follows the system display language: Chinese on a Chinese
-Windows, English everywhere else. This is not only a preference. A Win32 menu
-takes its font from the system-wide `lfMenuFont`, which on an English Windows
-is Segoe UI, and Segoe UI has no CJK glyphs. Chinese text then falls through
-GDI font linking into a Japanese face whose bitmap glyphs look poor at menu
-sizes.
+Windows, English everywhere else. That is not only taste. A Win32 menu takes
+its font from the system-wide `lfMenuFont`, which on an English Windows is
+Segoe UI, and Segoe UI has no CJK glyphs, so Chinese falls through GDI font
+linking into a Japanese face that looks poor at menu sizes.
 
-## Verify that it works
+## Install
 
-With an **administrator** terminal:
+Grab the latest [release][releases] and unzip it anywhere. Two files, no
+installer, no runtime, no registry.
 
-```
-powercfg /requests
-```
+Put `caffeinate.exe` somewhere on `PATH` and run `caffeinate-tray.exe` when you
+want the icon.
 
-While a switch is on, the `SYSTEM:` and `DISPLAY:` sections list
-`caffeinate-tray.exe`. After turning it off or exiting they return to `None`.
-
-Without administrator rights there is a second way.
-`SetThreadExecutionState` returns the state as it was before the call, so the
-flags can be read back: with both switches on you get `0x80000003`
-(`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`), and `0x80000000`
-with everything off.
+[releases]: https://github.com/zet235/caffeinate/releases
 
 ## Build
 
-A Rust toolchain and mingw are required. Visual Studio is not.
+A Rust toolchain and mingw. Visual Studio is not required.
 
-```
-scoop install main/rustup-gnu
-scoop install main/mingw
-cargo build --release
-```
-
-`windows-sys` needs mingw's `dlltool.exe` on the gnu target and `winresource`
-needs `windres.exe`, so mingw has to be on `PATH`.
-
-The result is `target/release/caffeinate-tray.exe`, one self-contained file of
-roughly 360 KB.
-
-### Icons
-
-The tray icons are drawn in code by `tools/gen_icons.py` (pure Python, no
-dependencies), so there is no third-party artwork involved:
-
-```
-python tools/gen_icons.py
+```console
+$ scoop install main/rustup-gnu main/mingw
+$ cargo build --release
 ```
 
-Change the two RGB values in `main()` for different colours, or drop your own
-`.ico` files into `assets/`.
+mingw is not optional: on the gnu target `windows-sys` shells out to
+`dlltool.exe`, and `winresource` needs `windres.exe`.
+
+The artwork is generated, not drawn by hand:
+
+```console
+$ python tools/gen_icons.py
+```
+
+Pure Python, no dependencies. Change the two RGB values in `main()` for
+different colours.
+
+## Does it actually work?
+
+With an **administrator** terminal:
+
+```console
+$ powercfg /requests
+```
+
+While something is held, the `SYSTEM:` and `DISPLAY:` sections name the process
+holding it, and return to `None` afterwards.
+
+Without administrator rights, read the flags back instead:
+`SetThreadExecutionState` returns the state as it was before the call, so
+holding both gives `0x80000003`
+(`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`) and releasing
+gives `0x80000000`.
 
 ## Notes for anyone changing this
 
-Three things in here are easy to get wrong and hard to notice afterwards, and
-each one fails silently. Read them before touching the Win32 layer.
+Three things here are easy to get wrong and hard to notice afterwards. Each one
+fails silently.
 
-- `SetThreadExecutionState` must be called with `ES_CONTINUOUS` every time.
-  Without it the call resets the idle timer once instead of holding the state,
-  so the program looks fine and the machine sleeps anyway a few minutes later.
-- `SetTimer` with a null `hwnd` **ignores the id you pass** and assigns its
+- **`ES_CONTINUOUS` on every call.** Without it `SetThreadExecutionState`
+  resets the idle timer once instead of holding the state, so everything looks
+  fine and the machine sleeps anyway a few minutes later.
+- **`SetTimer` with a null `hwnd` ignores the id you pass** and assigns its
   own, returning it. `WM_TIMER` carries that id in `wParam`, so the comparison
-  must use the returned value. Getting this wrong makes the countdown silently
-  do nothing, and no unit test catches it because the bug is in the wiring.
-- `SetThreadExecutionState` is bound to the calling thread, which is why this
-  program starts no background threads at all. The countdown runs on `WM_TIMER`
-  inside the main message loop.
+  must use the returned value. Getting this wrong stops the countdown dead, and
+  no unit test catches it because the bug is in the wiring.
+- **The request is bound to the calling thread**, which is why neither program
+  starts a background thread. The tray counts down on `WM_TIMER` inside its
+  message loop; the CLI blocks its main thread for the length of the hold.
 
-## Roadmap
+That last point is also why the CLI holds its own request rather than asking
+the tray to. If the tray is not running, crashes, or is killed, the CLI is
+still correct. What crosses between them is only enough for the tray to
+*display* the hold, and a `WM_COPYDATA` message is all it takes. A CLI killed
+outright never sends its release, so the tray keeps a `SYNCHRONIZE` handle to
+the announcing process and drops the row within a second of it exiting.
 
-- `caffeinate.exe`, a command line companion in the style of macOS
-  `caffeinate`, so a long build can be wrapped: `caffeinate cargo build`.
-- A Scoop manifest.
-
-## Known limitations
+## Limitations
 
 Some Modern Standby (S0ix) machines, and corporate group policy, can still
 force the display off or the machine to sleep. That is system level behaviour
