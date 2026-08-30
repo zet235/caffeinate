@@ -63,22 +63,11 @@ It stays silent unless something goes wrong, so it composes cleanly in scripts.
 
 ## The tray
 
-```
-☑ Keep system awake          holds ES_SYSTEM_REQUIRED
-☑ Keep screen on             holds ES_DISPLAY_REQUIRED
-──────────────────────
-Duration  ▸    ☑ Indefinitely
-               ☐ 5 / 10 / 15 / 30 minutes
-               ☐ 1 / 2 / 5 hours
-──────────────────────
-00:29:31 remaining
-CLI: cargo build --release
-──────────────────────
-Exit
-```
+<img src="assets/menu.png" width="297" alt="The tray menu: Keep system awake and Keep screen on both ticked, a Duration submenu, 00:29:56 remaining, and a row reading CLI: cargo build --release">
 
-- The two switches are independent. While a big download runs you can keep the
-  system awake and still let the screen turn off.
+- The two switches are independent, and hold one flag each:
+  `ES_SYSTEM_REQUIRED` and `ES_DISPLAY_REQUIRED`. While a big download runs you
+  can keep the system awake and still let the screen turn off.
 - When the countdown expires both switches turn off and the duration resets.
 - Choosing a duration while both switches are off only records the choice; the
   clock starts when a switch goes on.
