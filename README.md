@@ -93,6 +93,11 @@ lights up and a row appears naming the command. The two checkmarks stay put,
 because they report what **you** chose and a CLI hold is somebody else's
 business.
 
+The announcement happens once, when the hold starts, so a tray launched *after*
+a hold is already running will not show it. The hold itself is unaffected: the
+CLI owns the power request either way, and the display is the only thing that
+misses out.
+
 The interface follows the system display language: Chinese on a Chinese
 Windows, English everywhere else. That is not only taste. A Win32 menu takes
 its font from the system-wide `lfMenuFont`, which on an English Windows is
@@ -153,11 +158,11 @@ $ powercfg /requests
 While something is held, the `SYSTEM:` and `DISPLAY:` sections name the process
 holding it, and return to `None` afterwards.
 
-Without administrator rights, read the flags back instead:
-`SetThreadExecutionState` returns the state as it was before the call, so
-holding both gives `0x80000003`
-(`ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`) and releasing
-gives `0x80000000`.
+`powercfg` needs elevation and there is no unprivileged equivalent, because the
+request is bound to a thread inside the holding process and nothing outside it
+can read that back. Without an administrator terminal the only check available
+is the behavioural one: leave the machine idle past its sleep timeout and see
+that it stays up.
 
 ## Notes for anyone changing this
 
@@ -183,6 +188,11 @@ outright never sends its release, so the tray keeps a `SYNCHRONIZE` handle to
 the announcing process and drops the row within a second of it exiting.
 
 ## Limitations
+
+While the tray menu is open, Windows runs its own modal loop and the message
+loop that drives the countdown does not get a turn. A countdown therefore does
+not expire until the menu closes, and the "remaining" row you are looking at is
+frozen while you look at it.
 
 Some Modern Standby (S0ix) machines, and corporate group policy, can still
 force the display off or the machine to sleep. That is system level behaviour
