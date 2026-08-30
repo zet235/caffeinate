@@ -11,6 +11,28 @@ not sleep. Rust, `x86_64-pc-windows-gnu`, no Visual Studio.
 - Every `unsafe` block carries a `// SAFETY:` comment saying why it is sound.
   `unsafe` is confined to the Win32 layer.
 
+## Commits
+
+Every commit message follows [Conventional Commits
+v1.0.0-beta.2](https://www.conventionalcommits.org/en/v1.0.0-beta.2/):
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+- `type` is `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
+  `ci`, or `chore`. `feat` and `fix` are the only ones that map to a release.
+- The description is lower case, imperative mood, and carries no trailing full
+  stop: `fix(ipc): reject a payload whose cbData does not match Wire`.
+- `scope` is the area touched, normally a module: `state`, `ipc`, `leases`,
+  `tray`, `theme`, `i18n`, `power`, `cli`, `build`, `ci`.
+- A breaking change is marked with `BREAKING CHANGE:` in the footer, or a `!`
+  after the type/scope.
+
 ## Build environment
 
 The target is `x86_64-pc-windows-gnu`, and **mingw has to be on `PATH`**. It is
