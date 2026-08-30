@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON, SM_CYSMICON};
 
 use crate::i18n::Strings;
 use crate::state::{AppState, SPANS, Span};
@@ -54,10 +55,27 @@ pub struct Ui {
     _span_menu: Submenu,
 }
 
+/// The size the notification area draws at, if Windows will say.
+fn notification_icon_size() -> Option<(u32, u32)> {
+    // SAFETY: scalar calls returning a system metric; they touch no memory.
+    let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+    if cx > 0 && cy > 0 {
+        Some((cx as u32, cy as u32))
+    } else {
+        // Nothing sensible to ask for, so let LoadImage choose as before.
+        None
+    }
+}
+
 impl Ui {
     pub fn build(strings: &'static Strings) -> Result<Ui, Box<dyn Error>> {
-        let icon_active = Icon::from_resource(ICON_ACTIVE, None)?;
-        let icon_idle = Icon::from_resource(ICON_IDLE, None)?;
+        // Ask for the notification area's own size. Left to itself LoadImage
+        // takes the *large* icon metric and hands the shell something it then
+        // has to shrink, which is exactly the resampling the DPI manifest
+        // exists to avoid.
+        let size = notification_icon_size();
+        let icon_active = Icon::from_resource(ICON_ACTIVE, size)?;
+        let icon_idle = Icon::from_resource(ICON_IDLE, size)?;
 
         let system = CheckMenuItem::with_id(ID_SYSTEM, strings.keep_system, true, false, None);
         let display = CheckMenuItem::with_id(ID_DISPLAY, strings.keep_screen, true, false, None);

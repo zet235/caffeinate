@@ -370,19 +370,37 @@ mod tests {
     fn every_span_has_a_label_in_both_languages() {
         // The menu wires entry i to SPANS[i], so a label array that drifts out
         // of order would offer a row saying one thing and doing another. The
-        // lengths are already fixed by the array type, so what is worth
-        // checking is that the ends line up and nothing is blank.
-        for s in [&crate::i18n::EN, &crate::i18n::ZH] {
-            assert!(s.spans.iter().all(|label| !label.is_empty()));
-        }
-        assert_eq!(SPANS[0], Span::Forever);
-        assert_eq!(crate::i18n::EN.spans[0], "Indefinitely");
-        assert_eq!(crate::i18n::ZH.spans[0], "永久");
+        // lengths are fixed by the array type, so what is worth checking is
+        // that every entry actually describes the span sitting at its index.
+        for (i, span) in SPANS.iter().enumerate() {
+            let en = crate::i18n::EN.spans[i];
+            let zh = crate::i18n::ZH.spans[i];
+            assert!(
+                !en.is_empty() && !zh.is_empty(),
+                "index {i} has a blank label"
+            );
 
-        let last = SPANS.len() - 1;
-        assert_eq!(SPANS[last], Span::Minutes(300));
-        assert_eq!(crate::i18n::EN.spans[last], "5 hours");
-        assert_eq!(crate::i18n::ZH.spans[last], "5 小時");
+            match span {
+                Span::Forever => {
+                    assert_eq!(en, "Indefinitely", "index {i}");
+                    assert_eq!(zh, "永久", "index {i}");
+                }
+                // Under an hour the label counts minutes; at an exact number of
+                // hours it counts hours. Either way the number in the text has
+                // to be the number the entry will actually hold for.
+                Span::Minutes(m) if *m < 60 => {
+                    assert_eq!(en, format!("{m} minutes"), "index {i}");
+                    assert_eq!(zh, format!("{m} 分鐘"), "index {i}");
+                }
+                Span::Minutes(m) => {
+                    assert_eq!(m % 60, 0, "index {i}: {m} minutes has no tidy label");
+                    let hours = m / 60;
+                    let unit = if hours == 1 { "hour" } else { "hours" };
+                    assert_eq!(en, format!("{hours} {unit}"), "index {i}");
+                    assert_eq!(zh, format!("{hours} 小時"), "index {i}");
+                }
+            }
+        }
     }
 
     #[test]

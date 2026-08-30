@@ -6,20 +6,23 @@ mod state;
 mod theme;
 mod tray;
 
+use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::time::Instant;
 
+use caffeinate::util::wide;
 use caffeinate::{ipc, power};
 use tray_icon::menu::MenuEvent;
-use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
-    PostQuitMessage, SetTimer, TranslateMessage, WM_TIMER,
+    PostQuitMessage, SetTimer, TranslateMessage,
 };
 
 use leases::Leases;
 use state::AppState;
+use tray::Ui;
 
 const TIMER_INTERVAL_MS: u32 = 1000;
 
@@ -27,11 +30,6 @@ const TIMER_INTERVAL_MS: u32 = 1000;
 /// named mutex. The `Local\` prefix scopes uniqueness to the current logon
 /// session, which is what we want.
 const MUTEX_NAME: &str = r"Local\caffeinate-{7C1D4E92-3A6B-4F08-9E5D-2B8A1C0F6D34}";
-
-/// Convert a Rust string into the NUL-terminated UTF-16 buffer Win32 expects.
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
 
 /// Outcome of the single-instance check.
 ///
@@ -49,7 +47,8 @@ fn check_instance() -> Instance {
     // SAFETY: `name` is a valid NUL-terminated UTF-16 buffer that outlives the
     // call. A null first argument means default security attributes. The handle
     // is deliberately never closed: it must live until the process exits, at
-    // which point the OS reclaims it.
+    // which point the OS reclaims it. GetLastError is read immediately after,
+    // with nothing in between that could overwrite it.
     unsafe {
         let handle = CreateMutexW(null_mut(), 1, name.as_ptr());
         if handle.is_null() {
@@ -79,6 +78,139 @@ fn fatal(message: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Everything the message loop and the timer callback both work on.
+///
+/// It lives in a thread local because a `TIMERPROC` is a bare function with
+/// nowhere to hang state. That costs nothing in practice: `Ui` is full of `Rc`s
+/// and the power request is bound to this thread, so none of it could move to
+/// another thread anyway.
+struct App {
+    state: AppState,
+    leases: Leases,
+    ui: Ui,
+    ipc: Option<ipc::Server>,
+    power_ok: bool,
+}
+
+thread_local! {
+    static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+}
+
+impl App {
+    /// Take in whatever has arrived and push the result to the UI.
+    ///
+    /// `tick` is true only on the once-a-second pass, which is what advances
+    /// the countdown and expires dead leases.
+    fn pump(&mut self, now: Instant, tick: bool) {
+        let mut power_dirty = false;
+        let mut ui_dirty = false;
+
+        // WM_COPYDATA is a *sent* message: its window procedure runs inside
+        // GetMessageW, which does not return for sent messages. So these are
+        // collected on a later pass rather than being "already waiting" the
+        // moment a DispatchMessageW returns.
+        if let Some(server) = &self.ipc {
+            for wire in server.drain() {
+                if self.leases.apply(&wire) {
+                    ui_dirty = true;
+                }
+            }
+        }
+
+        // tray-icon's window procedure emits its events synchronously from
+        // inside DispatchMessageW, so draining the channel costs no latency.
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            let id = event.id.0.as_str();
+
+            // Duration entries are `span<index>`, indexing straight into SPANS.
+            if let Some(index) = id
+                .strip_prefix(tray::ID_SPAN_PREFIX)
+                .and_then(|n| n.parse::<usize>().ok())
+                && let Some(&span) = state::SPANS.get(index)
+            {
+                self.state.set_span(span, now);
+                ui_dirty = true;
+                continue;
+            }
+
+            match id {
+                tray::ID_SYSTEM => {
+                    self.state.toggle_system(now);
+                    power_dirty = true;
+                }
+                tray::ID_DISPLAY => {
+                    self.state.toggle_display(now);
+                    power_dirty = true;
+                }
+                tray::ID_QUIT => {
+                    // SAFETY: a scalar call with no arguments; the next
+                    // GetMessageW picks up WM_QUIT and leaves the loop.
+                    unsafe { PostQuitMessage(0) };
+                }
+                _ => {}
+            }
+        }
+
+        if tick {
+            // A CLI that was killed never sends its release, so every tick
+            // checks whether the announcing processes are still alive.
+            if self.leases.prune() {
+                ui_dirty = true;
+            }
+            if self.state.tick(now) {
+                // The countdown expired and the state was reset, so the power
+                // request has to be released with it.
+                power_dirty = true;
+            } else if self.state.remaining(now).is_some() {
+                // Mid countdown: only the "remaining" row and tooltip change.
+                ui_dirty = true;
+            }
+        }
+
+        if power_dirty {
+            self.power_ok = power::apply(self.state.system(), self.state.display());
+        }
+        if power_dirty || ui_dirty {
+            let hold = self.leases.summary();
+            self.ui
+                .sync(&self.state, now, self.power_ok, hold.as_deref());
+        }
+    }
+}
+
+/// Run one pass over the shared state, unless one is already running.
+///
+/// `try_borrow_mut` rather than `borrow_mut`: `Shell_NotifyIconW` inside
+/// `Ui::sync` is a cross-process send, and Windows pumps this thread's queue
+/// while it blocks, so the timer callback can land in the middle of a pass
+/// already under way. Skipping is right there: the pass in progress is about to
+/// publish a newer state anyway, and the next tick is only a second off.
+fn pump(now: Instant, tick: bool) {
+    APP.with(|cell| {
+        if let Ok(mut app) = cell.try_borrow_mut()
+            && let Some(app) = app.as_mut()
+        {
+            app.pump(now, tick);
+        }
+    });
+}
+
+/// The once-a-second tick.
+///
+/// This has to be a `TIMERPROC` rather than a `WM_TIMER` the main loop reads.
+/// While a popup menu is open Win32 runs its own modal message loop, and that
+/// loop drains the queue: a bare `WM_TIMER` posted by a null-hwnd `SetTimer`
+/// would be dispatched there and never reach our `GetMessageW`, so the
+/// countdown would silently stop for as long as the menu stayed open. A
+/// `TIMERPROC` is invoked *by* `DispatchMessageW`, so the modal loop calls it
+/// too and the clock keeps running.
+///
+/// Nothing in here may panic: unwinding out of an `extern "system"` function
+/// aborts the process.
+unsafe extern "system" fn on_timer(_hwnd: HWND, _msg: u32, _id: usize, _ticks: u32) {
+    pump(Instant::now(), true);
+}
+
 fn main() {
     let strings = i18n::detect();
 
@@ -93,34 +225,35 @@ fn main() {
     // Has to happen before any menu exists, or Win32 popups stay light forever.
     theme::follow_system();
 
-    let ui = match tray::Ui::build(strings) {
+    // The timer goes up before the tray icon so that failing here has no icon
+    // to strand: `fatal` exits without running destructors, and `TrayIcon`'s is
+    // what takes the icon back out of the notification area.
+    //
+    // With a null hwnd Windows ignores the id we pass and assigns its own,
+    // returning it. That returned value is what `KillTimer` needs below.
+    // SAFETY: scalar arguments plus a function pointer matching TIMERPROC; a
+    // null hwnd is the documented way to create a thread timer.
+    let timer_id = unsafe { SetTimer(null_mut(), 0, TIMER_INTERVAL_MS, Some(on_timer)) };
+    if timer_id == 0 {
+        fatal(strings.err_timer);
+    }
+
+    let ui = match Ui::build(strings) {
         Ok(ui) => ui,
         Err(e) => fatal(&format!("{}\n{e}", strings.err_tray)),
     };
 
     // The CLI announces its holds here. Failing to open the channel only costs
     // the status display, so the tray carries on without it.
-    let ipc_server = ipc::Server::start();
-    let mut leases = Leases::new();
-
-    let mut state = AppState::new();
-    let mut power_ok = true;
-    ui.sync(&state, Instant::now(), power_ok, None);
-
-    // A timer with a null hwnd posts WM_TIMER straight to this thread's message
-    // queue, which also wakes the blocking GetMessageW once a second.
-    //
-    // Important: with a null hwnd Windows **ignores** the id we pass and picks
-    // its own, handing it back as the return value. WM_TIMER carries that id in
-    // wParam, so the comparison below must use the returned value. Comparing
-    // against a constant of our own makes the condition never true, and the
-    // countdown silently stops working.
-    // SAFETY: scalar arguments only; a null hwnd is the documented way to
-    // create a thread timer.
-    let timer_id = unsafe { SetTimer(null_mut(), 0, TIMER_INTERVAL_MS, None) };
-    if timer_id == 0 {
-        fatal(strings.err_timer);
-    }
+    let app = App {
+        state: AppState::new(),
+        leases: Leases::new(),
+        ui,
+        ipc: ipc::Server::start(),
+        power_ok: true,
+    };
+    app.ui.sync(&app.state, Instant::now(), app.power_ok, None);
+    APP.with(|cell| *cell.borrow_mut() = Some(app));
 
     // SAFETY: MSG is plain old data, so an all-zero value is valid; GetMessageW
     // overwrites it before it is read.
@@ -135,84 +268,14 @@ fn main() {
             break;
         }
 
-        // SAFETY: `msg` was just filled in by GetMessageW.
+        // SAFETY: `msg` was just filled in by GetMessageW. Dispatching is what
+        // runs tray-icon's window procedure and `on_timer`.
         unsafe {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
-        let now = Instant::now();
-        let mut power_dirty = false;
-        let mut ui_dirty = false;
-
-        // The IPC window procedure also ran inside DispatchMessageW above, so
-        // like menu events these are already waiting.
-        if let Some(server) = &ipc_server {
-            for wire in server.drain() {
-                if leases.apply(&wire) {
-                    ui_dirty = true;
-                }
-            }
-        }
-
-        // tray-icon's window procedure emits its events synchronously from
-        // inside the DispatchMessageW above, so draining the channel right
-        // afterwards costs no latency.
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            let id = event.id.0.as_str();
-
-            // Duration entries are `span<index>`, indexing straight into SPANS.
-            if let Some(index) = id
-                .strip_prefix(tray::ID_SPAN_PREFIX)
-                .and_then(|n| n.parse::<usize>().ok())
-                && let Some(&span) = state::SPANS.get(index)
-            {
-                state.set_span(span, now);
-                ui_dirty = true;
-                continue;
-            }
-
-            match id {
-                tray::ID_SYSTEM => {
-                    state.toggle_system(now);
-                    power_dirty = true;
-                }
-                tray::ID_DISPLAY => {
-                    state.toggle_display(now);
-                    power_dirty = true;
-                }
-                tray::ID_QUIT => {
-                    // SAFETY: a scalar call with no arguments; the next
-                    // GetMessageW picks up WM_QUIT and leaves the loop.
-                    unsafe { PostQuitMessage(0) };
-                }
-                _ => {}
-            }
-        }
-
-        if msg.message == WM_TIMER && msg.wParam == timer_id {
-            // A CLI that was killed never sends its release, so every tick
-            // checks whether the announcing processes are still alive.
-            if leases.prune() {
-                ui_dirty = true;
-            }
-            if state.tick(now) {
-                // The countdown expired and the state was reset, so the power
-                // request has to be released with it.
-                power_dirty = true;
-            } else if state.remaining(now).is_some() {
-                // Mid countdown: only the "remaining" row and tooltip change.
-                ui_dirty = true;
-            }
-        }
-
-        if power_dirty {
-            power_ok = power::apply(state.system(), state.display());
-        }
-        if power_dirty || ui_dirty {
-            let hold = leases.summary();
-            ui.sync(&state, now, power_ok, hold.as_deref());
-        }
+        pump(Instant::now(), false);
     }
 
     // Release the power request on the way out. The OS would clear it when the
@@ -221,4 +284,7 @@ fn main() {
     // SAFETY: scalar arguments; calling this on an already dead timer is safe
     // and merely returns FALSE.
     unsafe { KillTimer(null_mut(), timer_id) };
+    // Drop the tray icon now, so it leaves the notification area immediately
+    // rather than when the shell next notices the process is gone.
+    APP.with(|cell| cell.borrow_mut().take());
 }
