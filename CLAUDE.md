@@ -5,9 +5,15 @@ not sleep. Rust, `x86_64-pc-windows-gnu`, no Visual Studio.
 
 ## Conventions
 
-- **Code comments and doc comments are English.** User-facing strings are
-  bilingual and live only in `src/i18n.rs`; never hard-code a visible string
-  anywhere else.
+- **Code comments and doc comments are English.**
+- **The tray's user-facing strings are bilingual and live only in
+  `src/i18n.rs`.** Never hard-code a visible string anywhere else in the tray,
+  and never compose one by concatenation outside `i18n.rs`: word order and
+  punctuation differ between the two languages, which is why the composed
+  strings are function pointers.
+- **The CLI is English only**, like every other command line tool, so its
+  `--help` and diagnostics live in `src/bin/cli.rs`. It does not link
+  `i18n.rs`, which belongs to the tray binary.
 - Every `unsafe` block carries a `// SAFETY:` comment saying why it is sound.
   `unsafe` is confined to the Win32 layer.
 
@@ -75,8 +81,14 @@ Do not undo these. Each one fails silently.
 
 - `SetThreadExecutionState` needs `ES_CONTINUOUS` on every call, or it resets
   the idle timer once instead of holding the state.
+- **The countdown ticks from a `TIMERPROC`, not from a `WM_TIMER` the message
+  loop reads.** While a popup menu is open Win32 runs its own modal message
+  loop, and that loop drains the queue: a bare `WM_TIMER` is dispatched there
+  and never reaches our `GetMessageW`, so the clock stops for as long as the
+  menu stays open and the machine sits awake past its deadline. A `TIMERPROC`
+  is invoked *by* `DispatchMessageW`, so the modal loop runs it too.
 - `SetTimer` with a null `hwnd` ignores the id argument and returns its own.
-  Compare `WM_TIMER`'s `wParam` against the returned value, never a constant.
+  That returned value is what `KillTimer` needs.
 - Win32 popup menus render light until the process calls uxtheme ordinals 135
   and 136 (`src/theme.rs`), before any menu is created.
 - Without the manifest in `assets/`, the process is DPI unaware and Windows

@@ -172,13 +172,16 @@ fails silently.
 - **`ES_CONTINUOUS` on every call.** Without it `SetThreadExecutionState`
   resets the idle timer once instead of holding the state, so everything looks
   fine and the machine sleeps anyway a few minutes later.
-- **`SetTimer` with a null `hwnd` ignores the id you pass** and assigns its
-  own, returning it. `WM_TIMER` carries that id in `wParam`, so the comparison
-  must use the returned value. Getting this wrong stops the countdown dead, and
-  no unit test catches it because the bug is in the wiring.
+- **The countdown ticks from a `TIMERPROC`, not a `WM_TIMER` the message loop
+  reads.** While the tray menu is open Windows runs its own modal message loop,
+  which drains the queue: a bare `WM_TIMER` is dispatched there and never
+  reaches our `GetMessageW`, so the clock would stop for as long as the menu
+  stayed open and the machine would sit awake past its deadline. A `TIMERPROC`
+  is called *by* `DispatchMessageW`, so the modal loop runs it too. No unit
+  test catches this either way, because the bug is in the wiring.
 - **The request is bound to the calling thread**, which is why neither program
-  starts a background thread. The tray counts down on `WM_TIMER` inside its
-  message loop; the CLI blocks its main thread for the length of the hold.
+  starts a background thread. The tray counts down inside its message loop; the
+  CLI stays on its main thread for the length of the hold.
 
 That last point is also why the CLI holds its own request rather than asking
 the tray to. If the tray is not running, crashes, or is killed, the CLI is
@@ -188,11 +191,6 @@ outright never sends its release, so the tray keeps a `SYNCHRONIZE` handle to
 the announcing process and drops the row within a second of it exiting.
 
 ## Limitations
-
-While the tray menu is open, Windows runs its own modal loop and the message
-loop that drives the countdown does not get a turn. A countdown therefore does
-not expire until the menu closes, and the "remaining" row you are looking at is
-frozen while you look at it.
 
 Some Modern Standby (S0ix) machines, and corporate group policy, can still
 force the display off or the machine to sleep. That is system level behaviour
