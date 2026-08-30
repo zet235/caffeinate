@@ -6,16 +6,28 @@ description = "Keep Windows awake, from the tray or the command line"
 repository = "https://github.com/zet235/caffeinate"
 license = "MIT"
 
+[lib]
+name = "caffeinate"
+path = "src/lib.rs"
+
+# The tray app is a GUI subsystem binary, so a terminal neither waits for it nor
+# shows its output. The CLI has to be a separate console subsystem binary.
 [[bin]]
 name = "caffeinate-tray"
 path = "src/main.rs"
+
+[[bin]]
+name = "caffeinate"
+path = "src/bin/cli.rs"
 
 [dependencies]
 tray-icon = "0.24.2"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
     "Win32_System_Power",
     "Win32_System_Threading",

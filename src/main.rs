@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod i18n;
-mod power;
+mod leases;
 mod state;
 mod theme;
 mod tray;
@@ -9,6 +9,7 @@ mod tray;
 use std::ptr::null_mut;
 use std::time::Instant;
 
+use caffeinate::{ipc, power};
 use tray_icon::menu::MenuEvent;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -17,6 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, SetTimer, TranslateMessage, WM_TIMER,
 };
 
+use leases::Leases;
 use state::AppState;
 
 const TIMER_INTERVAL_MS: u32 = 1000;
@@ -51,7 +53,12 @@ fn fatal(message: &str) -> ! {
     // SAFETY: both buffers are NUL-terminated and outlive the call; a null hwnd
     // means the message box has no owner window.
     unsafe {
-        MessageBoxW(null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
     std::process::exit(1);
 }
@@ -73,9 +80,14 @@ fn main() {
         Err(e) => fatal(&format!("{}\n{e}", strings.err_tray)),
     };
 
+    // The CLI announces its holds here. Failing to open the channel only costs
+    // the status display, so the tray carries on without it.
+    let ipc_server = ipc::Server::start();
+    let mut leases = Leases::new();
+
     let mut state = AppState::new();
     let mut power_ok = true;
-    ui.sync(&state, Instant::now(), power_ok);
+    ui.sync(&state, Instant::now(), power_ok, None);
 
     // A timer with a null hwnd posts WM_TIMER straight to this thread's message
     // queue, which also wakes the blocking GetMessageW once a second.
@@ -115,6 +127,16 @@ fn main() {
         let mut power_dirty = false;
         let mut ui_dirty = false;
 
+        // The IPC window procedure also ran inside DispatchMessageW above, so
+        // like menu events these are already waiting.
+        if let Some(server) = &ipc_server {
+            for wire in server.drain() {
+                if leases.apply(&wire) {
+                    ui_dirty = true;
+                }
+            }
+        }
+
         // tray-icon's window procedure emits its events synchronously from
         // inside the DispatchMessageW above, so draining the channel right
         // afterwards costs no latency.
@@ -151,6 +173,11 @@ fn main() {
         }
 
         if msg.message == WM_TIMER && msg.wParam == timer_id {
+            // A CLI that was killed never sends its release, so every tick
+            // checks whether the announcing processes are still alive.
+            if leases.prune() {
+                ui_dirty = true;
+            }
             if state.tick(now) {
                 // The countdown expired and the state was reset, so the power
                 // request has to be released with it.
@@ -165,7 +192,8 @@ fn main() {
             power_ok = power::apply(state.system(), state.display());
         }
         if power_dirty || ui_dirty {
-            ui.sync(&state, now, power_ok);
+            let hold = leases.summary();
+            ui.sync(&state, now, power_ok, hold.as_deref());
         }
     }
 

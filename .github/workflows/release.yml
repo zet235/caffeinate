@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, for example v0.1.0"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "${{ github.event.inputs.tag }}"
+          } else {
+            "${{ github.ref_name }}"
+          }
+          $version = $tag -replace '^v', ''
+          $name = "caffeinate-$version-x86_64-windows"
+
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item target/release/caffeinate.exe,
+                    target/release/caffeinate-tray.exe,
+                    README.md,
+                    LICENSE `
+                    -Destination "dist/$name"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+
+          # Scoop manifests need the SHA256, so surface it in the release notes
+          # rather than making people download and hash the file themselves.
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+
+          "tag=$tag"            >> $env:GITHUB_OUTPUT
+          "version=$version"    >> $env:GITHUB_OUTPUT
+          "asset=dist/$name.zip" >> $env:GITHUB_OUTPUT
+          "hash=$hash"          >> $env:GITHUB_OUTPUT
+
+          Write-Host "packaged $name.zip  sha256=$hash"
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          ### Install
+
+          Unzip anywhere. Put ``caffeinate.exe`` on your ``PATH`` and run
+          ``caffeinate-tray.exe`` when you want the tray icon.
+
+          ### Checksum
+
+          ``````
+          SHA256  ${{ steps.package.outputs.hash }}
+          ``````
+          "@
+          gh release create "${{ steps.package.outputs.tag }}" `
+            "${{ steps.package.outputs.asset }}" `
+            --title "${{ steps.package.outputs.tag }}" `
+            --notes "$notes"
