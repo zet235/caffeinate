@@ -13,6 +13,8 @@
 use std::cell::RefCell;
 use std::ptr::null_mut;
 
+use crate::util::wide;
+
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -27,7 +29,7 @@ const CLASS_NAME: &str = "caffeinate-ipc-{7C1D4E92-3A6B-4F08-9E5D-2B8A1C0F6D34}"
 /// Bumped whenever [`Wire`] changes shape. A tray running an older build will
 /// see a version it does not recognise and ignore the message rather than
 /// misread it.
-const WIRE_VERSION: u32 = 1;
+const WIRE_VERSION: u32 = 2;
 
 pub const KIND_ACQUIRE: u32 = 1;
 pub const KIND_RELEASE: u32 = 2;
@@ -51,28 +53,27 @@ pub struct Wire {
     pub version: u32,
     pub kind: u32,
     pub pid: u32,
-    /// Boolean, widened so the struct has no padding surprises.
-    pub display: u32,
     pub label_len: u32,
     pub label: [u16; LABEL_CAP],
 }
 
 impl Wire {
-    pub fn new(kind: u32, pid: u32, display: bool, label: &str) -> Self {
+    pub fn new(kind: u32, pid: u32, label: &str) -> Self {
         let mut buf = [0u16; LABEL_CAP];
         let mut len = 0usize;
-        for unit in label.encode_utf16() {
-            if len == LABEL_CAP {
+        // Truncate on a character boundary, not a UTF-16 unit: cutting between
+        // the halves of a surrogate pair would leave a lone surrogate that
+        // renders as a replacement character.
+        for ch in label.chars() {
+            if len + ch.len_utf16() > LABEL_CAP {
                 break;
             }
-            buf[len] = unit;
-            len += 1;
+            len += ch.encode_utf16(&mut buf[len..]).len();
         }
         Wire {
             version: WIRE_VERSION,
             kind,
             pid,
-            display: display as u32,
             label_len: len as u32,
             label: buf,
         }
@@ -86,35 +87,47 @@ impl Wire {
             && self.label_len as usize <= LABEL_CAP
     }
 
+    /// The label, made safe to drop straight into a menu row.
+    ///
+    /// The sender is not authenticated, so control characters are folded to
+    /// spaces here rather than trusted: a newline or a bidi override in a menu
+    /// item is somebody else's problem to have.
     pub fn label_string(&self) -> String {
         let len = (self.label_len as usize).min(LABEL_CAP);
         String::from_utf16_lossy(&self.label[..len])
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
     }
-
-    pub fn wants_display(&self) -> bool {
-        self.display != 0
-    }
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 // ---------------------------------------------------------------- client side
 
-/// Send one message to the tray program, if it is running.
+/// A tray program we have found.
 ///
-/// Returns `false` when there is no tray to talk to, which is not an error:
-/// the CLI works on its own and simply goes unannounced.
-pub fn send(msg: &Wire) -> bool {
+/// Worth naming rather than passing a bare `HWND` around: comparing two of
+/// these is how the CLI notices that the tray it announced to has gone and a
+/// different one has taken its place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Tray(HWND);
+
+/// Locate the running tray, if there is one.
+pub fn find_tray() -> Option<Tray> {
     let class = wide(CLASS_NAME);
     // SAFETY: `class` is a valid NUL-terminated UTF-16 buffer alive for the
     // call. Passing HWND_MESSAGE as the parent is the documented way to search
     // message-only windows, which are invisible to plain FindWindowW.
     let hwnd = unsafe { FindWindowExW(HWND_MESSAGE, null_mut(), class.as_ptr(), null_mut()) };
     if hwnd.is_null() {
-        return false;
+        None
+    } else {
+        Some(Tray(hwnd))
     }
+}
+
+/// Send one message to a tray we have already located.
+pub fn send_to(tray: Tray, msg: &Wire) -> bool {
+    let hwnd = tray.0;
 
     let data = COPYDATASTRUCT {
         dwData: 0,
@@ -144,6 +157,14 @@ pub fn send(msg: &Wire) -> bool {
     };
 
     delivered != 0 && answer != 0
+}
+
+/// Find the tray and send one message to it.
+///
+/// Returns `false` when there is no tray to talk to, which is not an error:
+/// the CLI works on its own and simply goes unannounced.
+pub fn send(msg: &Wire) -> bool {
+    find_tray().is_some_and(|tray| send_to(tray, msg))
 }
 
 // ---------------------------------------------------------------- server side
@@ -267,17 +288,16 @@ mod tests {
 
     #[test]
     fn round_trips_a_label() {
-        let w = Wire::new(KIND_ACQUIRE, 42, true, "cargo build --release");
+        let w = Wire::new(KIND_ACQUIRE, 42, "cargo build --release");
         assert!(w.is_valid());
         assert_eq!(w.label_string(), "cargo build --release");
         assert_eq!(w.pid, 42);
-        assert!(w.wants_display());
     }
 
     #[test]
     fn truncates_an_over_long_label() {
         let long = "x".repeat(LABEL_CAP + 40);
-        let w = Wire::new(KIND_ACQUIRE, 1, false, &long);
+        let w = Wire::new(KIND_ACQUIRE, 1, &long);
         assert_eq!(w.label_len as usize, LABEL_CAP);
         assert_eq!(w.label_string().chars().count(), LABEL_CAP);
         assert!(
@@ -287,21 +307,44 @@ mod tests {
     }
 
     #[test]
+    fn never_splits_a_surrogate_pair() {
+        // Each emoji is two UTF-16 units, so 33 of them straddle the 64 unit
+        // cap. Cutting mid pair would leave a lone surrogate, which decodes to
+        // a replacement character.
+        let long = "\u{1F600}".repeat(33);
+        let w = Wire::new(KIND_ACQUIRE, 1, &long);
+        assert!(w.label_len as usize <= LABEL_CAP);
+        assert_eq!(w.label_string(), "\u{1F600}".repeat(32));
+        assert!(
+            !w.label_string().contains('\u{FFFD}'),
+            "truncation must not manufacture a replacement character"
+        );
+    }
+
+    #[test]
+    fn folds_control_characters_out_of_a_label() {
+        // The sender is not authenticated, so a label reaches a menu row only
+        // after anything that could break the row is neutralised.
+        let w = Wire::new(KIND_ACQUIRE, 1, "build\r\nrm -rf");
+        assert_eq!(w.label_string(), "build  rm -rf");
+    }
+
+    #[test]
     fn handles_non_ascii_labels() {
-        let w = Wire::new(KIND_ACQUIRE, 7, false, "建置 專案");
+        let w = Wire::new(KIND_ACQUIRE, 7, "建置 專案");
         assert_eq!(w.label_string(), "建置 專案");
     }
 
     #[test]
     fn rejects_a_wrong_version() {
-        let mut w = Wire::new(KIND_ACQUIRE, 1, false, "x");
+        let mut w = Wire::new(KIND_ACQUIRE, 1, "x");
         w.version = WIRE_VERSION + 1;
         assert!(!w.is_valid());
     }
 
     #[test]
     fn rejects_an_unknown_kind() {
-        let mut w = Wire::new(KIND_ACQUIRE, 1, false, "x");
+        let mut w = Wire::new(KIND_ACQUIRE, 1, "x");
         w.kind = 99;
         assert!(!w.is_valid());
     }
@@ -309,13 +352,13 @@ mod tests {
     #[test]
     fn rejects_a_zero_pid() {
         // pid 0 is the system idle process and can never own a lease.
-        let w = Wire::new(KIND_ACQUIRE, 0, false, "x");
+        let w = Wire::new(KIND_ACQUIRE, 0, "x");
         assert!(!w.is_valid());
     }
 
     #[test]
     fn rejects_a_label_length_past_the_buffer() {
-        let mut w = Wire::new(KIND_ACQUIRE, 1, false, "x");
+        let mut w = Wire::new(KIND_ACQUIRE, 1, "x");
         w.label_len = (LABEL_CAP + 1) as u32;
         assert!(!w.is_valid());
     }

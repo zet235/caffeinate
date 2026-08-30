@@ -11,8 +11,8 @@
 //! icon and menu can show it. The tray is never load bearing.
 
 use std::io::Write;
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 use caffeinate::{ipc, power};
 
@@ -194,49 +194,120 @@ fn run_cli() -> i32 {
         eprintln!("caffeinate: the system refused the power request; continuing anyway");
     }
 
-    let pid = std::process::id();
-    ipc::send(&ipc::Wire::new(
-        ipc::KIND_ACQUIRE,
-        pid,
-        cli.display,
-        &label(&cli.mode),
-    ));
+    let mut announcer = Announcer::new(std::process::id(), &label(&cli.mode));
+    announcer.poll();
 
     let code = match &cli.mode {
-        Mode::Wrap(command) => run(command),
+        Mode::Wrap(command) => run(command, &mut announcer),
         Mode::Timed(duration, _) => {
-            std::thread::sleep(*duration);
+            wait_out(*duration, &mut announcer);
             0
         }
         Mode::Hold => {
             // Nothing to wait on, so park until Ctrl-C kills the process. The
             // OS releases the power request as it goes.
             loop {
-                std::thread::sleep(Duration::from_secs(3600));
+                wait_out(Duration::from_secs(3600), &mut announcer);
             }
         }
         Mode::Help => unreachable!("handled above"),
     };
 
-    // Sent unconditionally rather than only when the acquire was accepted: a
-    // tray that started after this process did never saw the acquire, but it
-    // may well be running now, and a release it does not recognise is a no-op.
-    ipc::send(&ipc::Wire::new(ipc::KIND_RELEASE, pid, cli.display, ""));
+    announcer.release();
     power::apply(false, false);
 
     code
 }
 
+/// How often the hold wakes up: often enough to notice the wrapped command
+/// finishing without a human seeing the delay, and to spot a tray that has just
+/// appeared.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Keeps the tray's view of this hold current.
+///
+/// Announcing once at startup is not enough. A tray launched *after* the hold
+/// began, or restarted during it, never saw the original message and would show
+/// nothing while the machine was genuinely being held awake. Comparing the
+/// window we last spoke to against the one that is there now is what makes a
+/// new tray pick the hold up.
+struct Announcer {
+    pid: u32,
+    acquire: ipc::Wire,
+    told: Option<ipc::Tray>,
+}
+
+impl Announcer {
+    fn new(pid: u32, label: &str) -> Self {
+        Self {
+            pid,
+            acquire: ipc::Wire::new(ipc::KIND_ACQUIRE, pid, label),
+            told: None,
+        }
+    }
+
+    /// Announce to the tray, if there is one we have not already told.
+    fn poll(&mut self) {
+        match (ipc::find_tray(), self.told) {
+            // Same tray as last time; it already knows.
+            (Some(tray), Some(told)) if tray == told => {}
+            (Some(tray), _) => {
+                if ipc::send_to(tray, &self.acquire) {
+                    self.told = Some(tray);
+                }
+            }
+            // No tray now, so whatever we told before no longer counts.
+            (None, _) => self.told = None,
+        }
+    }
+
+    fn release(&self) {
+        if let Some(tray) = self.told {
+            ipc::send_to(tray, &ipc::Wire::new(ipc::KIND_RELEASE, self.pid, ""));
+        }
+    }
+}
+
+/// Sleep for `total`, waking often enough to keep the tray informed.
+fn wait_out(total: Duration, announcer: &mut Announcer) {
+    let deadline = Instant::now() + total;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(POLL_INTERVAL));
+        announcer.poll();
+    }
+}
+
 /// Run the wrapped command and return its exit code.
-fn run(command: &[String]) -> i32 {
-    match Command::new(&command[0]).args(&command[1..]).status() {
-        // On Windows this is the full 32-bit exit code, including values like
-        // 0xC0000005 for a crash.
-        Ok(status) => status.code().unwrap_or(1),
+///
+/// Polled rather than blocked on, so the announcement can be retried while the
+/// command runs. The hold still lasts exactly as long as the command does.
+fn run(command: &[String], announcer: &mut Announcer) -> i32 {
+    let mut child: Child = match Command::new(&command[0]).args(&command[1..]).spawn() {
+        Ok(child) => child,
         Err(e) => {
             eprintln!("caffeinate: cannot run `{}`: {e}", command[0]);
             // 127 is the shell convention for "command not found".
-            127
+            return 127;
+        }
+    };
+
+    loop {
+        match child.try_wait() {
+            // On Windows this is the full 32-bit exit code, including values
+            // like 0xC0000005 for a crash.
+            Ok(Some(status)) => return status.code().unwrap_or(1),
+            Ok(None) => {
+                std::thread::sleep(POLL_INTERVAL);
+                announcer.poll();
+            }
+            Err(e) => {
+                eprintln!("caffeinate: lost track of `{}`: {e}", command[0]);
+                return 1;
+            }
         }
     }
 }
