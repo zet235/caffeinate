@@ -195,32 +195,38 @@ unsafe extern "system" fn wnd_proc(
         }
 
         // SAFETY: for a sent WM_COPYDATA the system guarantees lparam points at a
-        // COPYDATASTRUCT valid for the duration of this call. We accept the
-        // payload only when its size matches Wire exactly, then copy it out
-        // before returning, so nothing outlives the sender's buffer.
-        let accepted = unsafe {
-            let cds = lparam as *const COPYDATASTRUCT;
-            if cds.is_null() {
-                false
-            } else {
-                let cds = &*cds;
-                if cds.cbData as usize != size_of::<Wire>() || cds.lpData.is_null() {
-                    false
-                } else {
-                    let wire = std::ptr::read_unaligned(cds.lpData as *const Wire);
-                    if wire.is_valid() {
-                        INBOX.with(|inbox| inbox.borrow_mut().push(wire));
-                        true
-                    } else {
-                        false
-                    }
-                }
+        // COPYDATASTRUCT valid for the duration of this call.
+        let wire = unsafe { read_wire(lparam as *const COPYDATASTRUCT) };
+        return match wire {
+            Some(wire) if wire.is_valid() => {
+                INBOX.with(|inbox| inbox.borrow_mut().push(wire));
+                1
             }
+            _ => 0,
         };
-        return accepted as LRESULT;
     }
     // SAFETY: plain forwarding of a message we do not handle.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Copy the payload out of a `COPYDATASTRUCT`, if it is exactly one [`Wire`].
+///
+/// # Safety
+///
+/// `cds` must be null or point at a `COPYDATASTRUCT` whose `lpData`, when
+/// non-null, is readable for `cbData` bytes. The payload is accepted only when
+/// its size matches `Wire` exactly, and copied out, so nothing outlives the
+/// sender's buffer.
+unsafe fn read_wire(cds: *const COPYDATASTRUCT) -> Option<Wire> {
+    // SAFETY: the caller guarantees `cds` is null or valid to read.
+    let cds = unsafe { cds.as_ref() }?;
+    if cds.cbData as usize != size_of::<Wire>() || cds.lpData.is_null() {
+        return None;
+    }
+    // SAFETY: `lpData` is non-null and holds `size_of::<Wire>()` readable bytes.
+    // Wire is plain integers, so any bit pattern is a valid value; the read is
+    // unaligned because the sender's buffer promises no alignment.
+    Some(unsafe { std::ptr::read_unaligned(cds.lpData as *const Wire) })
 }
 
 /// The tray program's receiving end. Dropping it does nothing special; the
