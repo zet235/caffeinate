@@ -50,9 +50,9 @@ pub struct Ui {
     hold_index: usize,
     icon_active: Icon,
     icon_idle: Icon,
-    /// The menu has to stay alive, or right-clicking the tray pops up nothing.
+    /// Kept to insert and remove the hold row. The tray owns a handle to the
+    /// same menu, and the menu owns its items, the submenu included.
     menu: Menu,
-    _span_menu: Submenu,
 }
 
 /// The size the notification area draws at, if Windows will say.
@@ -150,7 +150,6 @@ impl Ui {
             icon_active,
             icon_idle,
             menu,
-            _span_menu: span_menu,
         })
     }
 
@@ -158,11 +157,20 @@ impl Ui {
     /// UI: every change to `AppState` must be followed by a call here, and no
     /// other code is allowed to touch menu items directly.
     ///
-    /// `hold` is the label of a hold announced by a `caffeinate` CLI process,
-    /// if any. It deliberately does not move the two checkmarks: those report
+    /// `hold` is the newest hold announced by a `caffeinate` CLI process and
+    /// how many others there are, if any. It deliberately does not move the two checkmarks: those report
     /// what the user chose, and a CLI hold is somebody else's business. What it
     /// does change is the icon and the tooltip, which report the real effect.
-    pub fn sync(&self, state: &AppState, now: Instant, power_ok: bool, hold: Option<&str>) {
+    pub fn sync(
+        &self,
+        state: &AppState,
+        now: Instant,
+        power_ok: bool,
+        hold: Option<(&str, usize)>,
+    ) {
+        let hold = hold.map(|(newest, others)| (self.strings.hold_summary)(newest, others));
+        let hold = hold.as_deref();
+
         self.system.set_checked(state.system());
         self.display.set_checked(state.display());
 

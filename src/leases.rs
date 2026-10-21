@@ -152,27 +152,12 @@ impl Leases {
         self.list.len() != before
     }
 
-    /// What to show in the menu and tooltip.
-    ///
-    /// With more than one hold only the newest is named, plus a count. The row
-    /// is a status line, not a process list.
-    pub fn summary(&self) -> Option<String> {
-        summarise(self.list.iter().map(|lease| lease.label.as_str()))
-    }
-}
-
-/// The status line for a set of hold labels, oldest first.
-///
-/// Split out from [`Leases`] so the one piece of real judgement in this module
-/// can be tested: everything else here needs a live process to mean anything.
-fn summarise<'a>(labels: impl DoubleEndedIterator<Item = &'a str>) -> Option<String> {
-    let labels: Vec<&str> = labels.collect();
-    let newest = labels.last()?;
-    let extra = labels.len() - 1;
-    if extra == 0 {
-        Some((*newest).to_string())
-    } else {
-        Some(format!("{newest} (+{extra})"))
+    /// The newest hold's label and how many others there are, for the menu
+    /// and tooltip. The row is a status line, not a process list, so only the
+    /// most recent announcement is named.
+    pub fn summary(&self) -> Option<(&str, usize)> {
+        let newest = self.list.last()?;
+        Some((&newest.label, self.list.len() - 1))
     }
 }
 
@@ -200,28 +185,6 @@ mod tests {
         assert!(
             !name.chars().any(std::path::is_separator),
             "must be a file name, not a path: {name}"
-        );
-    }
-
-    #[test]
-    fn nothing_held_says_nothing() {
-        assert_eq!(summarise([].into_iter()), None);
-    }
-
-    #[test]
-    fn a_single_hold_is_named_on_its_own() {
-        assert_eq!(
-            summarise(["cargo build"].into_iter()),
-            Some("cargo build".to_string())
-        );
-    }
-
-    #[test]
-    fn extra_holds_are_counted_behind_the_newest() {
-        // Newest last: the most recent announcement is the one worth naming.
-        assert_eq!(
-            summarise(["old", "newer", "newest"].into_iter()),
-            Some("newest (+2)".to_string())
         );
     }
 }

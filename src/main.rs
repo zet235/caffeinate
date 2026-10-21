@@ -171,9 +171,8 @@ impl App {
             self.power_ok = power::apply(self.state.system(), self.state.display());
         }
         if power_dirty || ui_dirty {
-            let hold = self.leases.summary();
             self.ui
-                .sync(&self.state, now, self.power_ok, hold.as_deref());
+                .sync(&self.state, now, self.power_ok, self.leases.summary());
         }
     }
 }
