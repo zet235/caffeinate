@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use crate::i18n::Strings;
 
 /// How long a hold should last. `Forever` means no limit.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Span {
+    #[default]
     Forever,
     Minutes(u32),
 }
@@ -40,7 +41,7 @@ pub const SPANS: [Span; 8] = [
 /// The complete application state. Fields are private on purpose: everything
 /// goes through the methods below so `deadline` can never drift out of sync
 /// with the switches and the selected span.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct AppState {
     system: bool,
     display: bool,
@@ -50,12 +51,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        Self {
-            system: false,
-            display: false,
-            span: Span::Forever,
-            deadline: None,
-        }
+        Self::default()
     }
 
     pub fn system(&self) -> bool {
@@ -134,27 +130,7 @@ impl AppState {
             self.deadline = self.span.as_duration().map(|d| now + d);
         }
     }
-}
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Format a duration as `HH:MM:SS`. Values past 99 hours are not special-cased;
-/// the longest span offered is five hours.
-pub fn format_hms(d: Duration) -> String {
-    let total = d.as_secs();
-    format!(
-        "{:02}:{:02}:{:02}",
-        total / 3600,
-        (total % 3600) / 60,
-        total % 60
-    )
-}
-
-impl AppState {
     /// Text for the "remaining" row in the menu.
     pub fn remaining_text(&self, now: Instant, s: &Strings) -> String {
         match self.remaining(now) {
@@ -177,6 +153,18 @@ impl AppState {
         let hms = self.remaining(now).map(format_hms);
         (s.tooltip)(what, hms.as_deref(), hold)
     }
+}
+
+/// Format a duration as `HH:MM:SS`. Values past 99 hours are not special-cased;
+/// the longest span offered is five hours.
+pub fn format_hms(d: Duration) -> String {
+    let total = d.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60
+    )
 }
 
 #[cfg(test)]

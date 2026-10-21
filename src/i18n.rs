@@ -44,6 +44,8 @@ pub struct Strings {
 
     /// Turns `HH:MM:SS` into the menu's "remaining" row.
     pub remaining_text: fn(&str) -> String,
+    /// Names the newest CLI hold, plus a count of any others.
+    pub hold_summary: fn(&str, usize) -> String,
     /// Labels a hold announced by a `caffeinate` CLI process.
     pub cli_hold: fn(&str) -> String,
     /// Builds the whole tooltip.
@@ -55,6 +57,25 @@ pub struct Strings {
     pub tooltip: fn(Option<&str>, Option<&str>, Option<&str>) -> String,
 }
 
+fn hold_summary(newest: &str, others: usize) -> String {
+    if others == 0 {
+        newest.to_string()
+    } else {
+        format!("{newest} (+{others})")
+    }
+}
+
+/// Everything after the tooltip's prefix: the parts that apply, or `off` when
+/// none do.
+fn join_tooltip(prefix: &str, off: &str, what: Option<String>, hold: Option<String>) -> String {
+    let parts: Vec<String> = what.into_iter().chain(hold).collect();
+    if parts.is_empty() {
+        format!("{prefix}{off}")
+    } else {
+        format!("{prefix}{}", parts.join(" · "))
+    }
+}
+
 fn en_remaining(hms: &str) -> String {
     format!("{hms} remaining")
 }
@@ -64,20 +85,11 @@ fn en_cli_hold(label: &str) -> String {
 }
 
 fn en_tooltip(what: Option<&str>, hms: Option<&str>, hold: Option<&str>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(what) = what {
-        parts.push(match hms {
-            Some(hms) => format!("{what}, {hms} remaining"),
-            None => what.to_string(),
-        });
-    }
-    if let Some(hold) = hold {
-        parts.push(en_cli_hold(hold));
-    }
-    if parts.is_empty() {
-        parts.push("off".to_string());
-    }
-    format!("caffeinate: {}", parts.join(" · "))
+    let what = what.map(|what| match hms {
+        Some(hms) => format!("{what}, {}", en_remaining(hms)),
+        None => what.to_string(),
+    });
+    join_tooltip("caffeinate: ", "off", what, hold.map(en_cli_hold))
 }
 
 fn zh_remaining(hms: &str) -> String {
@@ -89,20 +101,11 @@ fn zh_cli_hold(label: &str) -> String {
 }
 
 fn zh_tooltip(what: Option<&str>, hms: Option<&str>, hold: Option<&str>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(what) = what {
-        parts.push(match hms {
-            Some(hms) => format!("{what} · 剩餘 {hms}"),
-            None => what.to_string(),
-        });
-    }
-    if let Some(hold) = hold {
-        parts.push(zh_cli_hold(hold));
-    }
-    if parts.is_empty() {
-        parts.push("未啟用".to_string());
-    }
-    format!("caffeinate：{}", parts.join(" · "))
+    let what = what.map(|what| match hms {
+        Some(hms) => format!("{what} · {}", zh_remaining(hms)),
+        None => what.to_string(),
+    });
+    join_tooltip("caffeinate：", "未啟用", what, hold.map(zh_cli_hold))
 }
 
 pub static EN: Strings = Strings {
@@ -132,6 +135,7 @@ pub static EN: Strings = Strings {
     err_mutex: "Failed to check whether another copy is already running.",
 
     remaining_text: en_remaining,
+    hold_summary,
     cli_hold: en_cli_hold,
     tooltip: en_tooltip,
 };
@@ -163,6 +167,7 @@ pub static ZH: Strings = Strings {
     err_mutex: "無法確認是否已有另一份在執行。",
 
     remaining_text: zh_remaining,
+    hold_summary,
     cli_hold: zh_cli_hold,
     tooltip: zh_tooltip,
 };
@@ -181,5 +186,21 @@ pub fn detect() -> &'static Strings {
         &ZH
     } else {
         &EN
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_single_hold_is_named_on_its_own() {
+        assert_eq!((EN.hold_summary)("cargo build", 0), "cargo build");
+    }
+
+    #[test]
+    fn extra_holds_are_counted_behind_the_newest() {
+        assert_eq!((EN.hold_summary)("newest", 2), "newest (+2)");
+        assert_eq!((ZH.hold_summary)("newest", 2), "newest (+2)");
     }
 }

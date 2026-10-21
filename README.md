@@ -82,10 +82,10 @@ lights up and a row appears naming the command. The two checkmarks stay put,
 because they report what **you** chose and a CLI hold is somebody else's
 business.
 
-The announcement happens once, when the hold starts, so a tray launched *after*
-a hold is already running will not show it. The hold itself is unaffected: the
-CLI owns the power request either way, and the display is the only thing that
-misses out.
+The CLI keeps looking for a tray while it holds, so a tray launched *after* a
+hold began, or restarted during one, picks it up within a quarter of a second.
+The hold itself never depends on the tray: the CLI owns the power request
+either way.
 
 The interface follows the system display language: Chinese on a Chinese
 Windows, English everywhere else. That is not only taste. A Win32 menu takes

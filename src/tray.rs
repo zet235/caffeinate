@@ -7,7 +7,7 @@ use std::error::Error;
 use std::time::Instant;
 
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON, SM_CYSMICON};
 
 use crate::i18n::Strings;
@@ -50,9 +50,9 @@ pub struct Ui {
     hold_index: usize,
     icon_active: Icon,
     icon_idle: Icon,
-    /// The menu has to stay alive, or right-clicking the tray pops up nothing.
+    /// Kept to insert and remove the hold row. The tray owns a handle to the
+    /// same menu, and the menu owns its items, the submenu included.
     menu: Menu,
-    _span_menu: Submenu,
 }
 
 /// The size the notification area draws at, if Windows will say.
@@ -124,6 +124,12 @@ impl Ui {
         // the hold row directly under "remaining" whatever the menu grows into.
         let hold_index = menu.items().len().saturating_sub(2);
 
+        // tray-icon queues every hover and click on an unbounded channel. Only
+        // the menu matters here, so nothing would ever read that queue and it
+        // would grow each time the pointer crossed the icon. The handler has to
+        // be in place before the first event, which is why it goes in here.
+        TrayIconEvent::set_event_handler(Some(|_| {}));
+
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
             .with_icon(icon_idle.clone())
@@ -144,7 +150,6 @@ impl Ui {
             icon_active,
             icon_idle,
             menu,
-            _span_menu: span_menu,
         })
     }
 
@@ -152,11 +157,20 @@ impl Ui {
     /// UI: every change to `AppState` must be followed by a call here, and no
     /// other code is allowed to touch menu items directly.
     ///
-    /// `hold` is the label of a hold announced by a `caffeinate` CLI process,
-    /// if any. It deliberately does not move the two checkmarks: those report
+    /// `hold` is the newest hold announced by a `caffeinate` CLI process and
+    /// how many others there are, if any. It deliberately does not move the two checkmarks: those report
     /// what the user chose, and a CLI hold is somebody else's business. What it
     /// does change is the icon and the tooltip, which report the real effect.
-    pub fn sync(&self, state: &AppState, now: Instant, power_ok: bool, hold: Option<&str>) {
+    pub fn sync(
+        &self,
+        state: &AppState,
+        now: Instant,
+        power_ok: bool,
+        hold: Option<(&str, usize)>,
+    ) {
+        let hold = hold.map(|(newest, others)| (self.strings.hold_summary)(newest, others));
+        let hold = hold.as_deref();
+
         self.system.set_checked(state.system());
         self.display.set_checked(state.display());
 
