@@ -7,7 +7,7 @@ use std::error::Error;
 use std::time::Instant;
 
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON, SM_CYSMICON};
 
 use crate::i18n::Strings;
@@ -123,6 +123,12 @@ impl Ui {
         // Last two entries are the separator and Exit, so inserting here puts
         // the hold row directly under "remaining" whatever the menu grows into.
         let hold_index = menu.items().len().saturating_sub(2);
+
+        // tray-icon queues every hover and click on an unbounded channel. Only
+        // the menu matters here, so nothing would ever read that queue and it
+        // would grow each time the pointer crossed the icon. The handler has to
+        // be in place before the first event, which is why it goes in here.
+        TrayIconEvent::set_event_handler(Some(|_| {}));
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
