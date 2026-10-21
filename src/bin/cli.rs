@@ -10,7 +10,9 @@
 //! If `caffeinate-tray` happens to be running, it is told about the hold so its
 //! icon and menu can show it. The tray is never load bearing.
 
-use std::io::Write;
+use std::ffi::OsStr;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -286,7 +288,7 @@ fn wait_out(total: Duration, announcer: &mut Announcer) {
 /// Polled rather than blocked on, so the announcement can be retried while the
 /// command runs. The hold still lasts exactly as long as the command does.
 fn run(command: &[String], announcer: &mut Announcer) -> i32 {
-    let mut child: Child = match Command::new(&command[0]).args(&command[1..]).spawn() {
+    let mut child = match spawn(command) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("caffeinate: cannot run `{}`: {e}", command[0]);
@@ -310,6 +312,50 @@ fn run(command: &[String], announcer: &mut Announcer) -> i32 {
             }
         }
     }
+}
+
+/// What `PATHEXT` holds on a stock Windows, for an environment that lost it.
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// Start the wrapped command, finding it the way a Windows shell would.
+///
+/// `Command` only ever appends `.exe` to a bare name, so `npm`, which is
+/// `npm.cmd`, comes back as not found. When that happens, look along `PATH`
+/// for the name with each `PATHEXT` extension and run the first hit: given a
+/// full path, `Command` knows how to launch a `.cmd` or `.bat` itself.
+fn spawn(command: &[String]) -> std::io::Result<Child> {
+    let (program, args) = (&command[0], &command[1..]);
+    match Command::new(program).args(args).spawn() {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| DEFAULT_PATHEXT.into());
+            match find_on_path(program, &path, &pathext) {
+                Some(found) => Command::new(found).args(args).spawn(),
+                None => Err(e),
+            }
+        }
+        result => result,
+    }
+}
+
+/// The first `<dir>\<program><ext>` that exists, walking `path` in order and
+/// trying each extension in `pathext` within a directory.
+///
+/// Only a bare name is looked up. Like `Command`, and unlike `cmd.exe`, the
+/// current directory is not searched, so a stray `cargo.cmd` in a checkout
+/// cannot stand in for the real one.
+fn find_on_path(program: &str, path: &OsStr, pathext: &str) -> Option<PathBuf> {
+    if Path::new(program).components().count() != 1 {
+        return None;
+    }
+    std::env::split_paths(path)
+        .flat_map(|dir| {
+            pathext
+                .split(';')
+                .filter(|ext| !ext.is_empty())
+                .map(move |ext| dir.join(format!("{program}{ext}")))
+        })
+        .find(|candidate| candidate.is_file())
 }
 
 #[cfg(test)]
@@ -435,5 +481,27 @@ mod tests {
             "hold 1m"
         );
         assert_eq!(label(&Mode::Hold), "hold");
+    }
+
+    #[test]
+    fn finds_a_batch_shim_by_its_pathext_extension() {
+        // npm, yarn and gradlew are all .cmd or .bat files, which `Command`
+        // will not find from a bare name.
+        let dir = std::env::temp_dir().join(format!("caffeinate-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shim.cmd"), "@exit /b 0\r\n").unwrap();
+        let path = dir.clone().into_os_string();
+
+        let found = find_on_path("shim", &path, ".EXE;.CMD");
+        let missing = find_on_path("shim", &path, ".EXE;.BAT");
+        let qualified = find_on_path("sub\\shim", &path, ".CMD");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            found.map(|p| p.file_name().unwrap().to_ascii_lowercase()),
+            Some("shim.cmd".into())
+        );
+        assert_eq!(missing, None, "only the listed extensions are tried");
+        assert_eq!(qualified, None, "a path is not looked up on PATH");
     }
 }
